@@ -54,7 +54,9 @@ exact quantity, unit, and food. For example:
 }
 ```
 
-The server looks up existing foods and units by name, creating missing entries.
+The server looks up existing foods and units by name. If a name is unknown, it
+returns similar catalog entries for selection. After confirming a genuinely new
+name, set `"create_missing": true` on that structured ingredient to create it.
 Plain text such as `"300 g Reis"` is sent to Mealie's own parser. If the parser
 cannot identify an amount and food, creation fails with an actionable message
 instead of silently saving a note-only ingredient. A range such as `400-500 g`

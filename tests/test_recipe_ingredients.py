@@ -76,7 +76,8 @@ async def test_structured_ingredient_resolves_existing_unit_and_creates_food():
     ) as http:
         client = MealieClient("https://mealie.test", "token", client=http)
         ingredients = await _prepare_ingredients(
-            client, [RecipeIngredientInput(quantity=200, unit="g", food="Frischkäse")]
+            client,
+            [RecipeIngredientInput(quantity=200, unit="g", food="Frischkäse", create_missing=True)],
         )
 
     assert ingredients == [

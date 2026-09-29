@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from difflib import SequenceMatcher
 from typing import Any
 
 import httpx
@@ -346,19 +347,43 @@ class MealieClient:
             "GET", "/api/units", params={"search": query, "perPage": per_page}
         )
 
-    async def resolve_ingredient_entity(self, kind: str, name: str) -> dict[str, Any]:
-        """Return an existing food/unit, or create it for a structured ingredient."""
+    async def resolve_ingredient_entity(
+        self, kind: str, name: str, *, create_missing: bool = False
+    ) -> dict[str, Any]:
+        """Reuse exact catalog entries; suggest similar ones before creation."""
         if kind not in {"foods", "units"}:
             raise ValueError("Only foods and units can be resolved")
-        listing = await self._request(
-            "GET", f"/api/{kind}", params={"search": name, "perPage": 1000}
-        )
-        items = listing.get("items", []) if isinstance(listing, dict) else listing
-        for item in items or []:
+        items: list[dict[str, Any]] = []
+        page = 1
+        while True:
+            listing = await self._request(
+                "GET", f"/api/{kind}", params={"perPage": 1000, "page": page}
+            )
+            if not isinstance(listing, dict) or not isinstance(listing.get("items"), list):
+                raise MealieError(500, f"Unexpected {kind} listing", listing)
+            items.extend(listing["items"])
+            if page >= listing.get("totalPages", 1):
+                break
+            page += 1
+        for item in items:
             names = [item.get("name", ""), item.get("abbreviation", "")]
             names += [alias.get("name", "") for alias in item.get("aliases") or []]
             if any(candidate.casefold() == name.casefold() for candidate in names):
                 return item
+        if not create_missing:
+            similar = [
+                item
+                for item in items
+                if SequenceMatcher(
+                    None, name.casefold(), (item.get("name") or "").casefold()
+                ).ratio()
+                >= 0.7
+            ]
+            candidates = ", ".join(f"{item['name']} ({item['id']})" for item in similar[:5])
+            raise ValueError(
+                f"Unknown {kind} entry '{name}'. Candidates: {candidates or 'none'}. "
+                "Select an existing name, or confirm a new entry with create_missing=true."
+            )
         created = await self._request("POST", f"/api/{kind}", json={"name": name})
         if not isinstance(created, dict) or not created.get("id"):
             raise MealieError(500, f"Unexpected response creating {kind}: {name}", created)

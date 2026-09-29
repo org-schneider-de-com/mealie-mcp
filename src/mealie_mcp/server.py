@@ -136,6 +136,7 @@ class RecipeIngredientInput(BaseModel):
     food: str | None = None
     note: str | None = None
     title: str | None = None
+    create_missing: bool = False
 
 
 _RANGE = re.compile(r"\b\d+(?:[.,]\d+)?\s*(?:[-–]|bis)\s*\d+(?:[.,]\d+)?\b", re.IGNORECASE)
@@ -153,10 +154,12 @@ async def _prepare_ingredients(
 ) -> list[dict[str, Any]]:
     """Preserve sections, parse text in one call, and accept exact structured amounts."""
     result: list[dict[str, Any] | None] = []
+    create_missing_flags: list[bool] = []
     lines: list[str] = []
     positions: list[int] = []
     for item in ingredients:
         if isinstance(item, RecipeIngredientInput):
+            create_missing_flags.append(item.create_missing)
             if item.title:
                 if item.quantity or item.food or item.unit:
                     raise ValueError("A section title cannot also be an ingredient")
@@ -175,6 +178,7 @@ async def _prepare_ingredients(
             continue
 
         title = _section_title(item)
+        create_missing_flags.append(False)
         if title is not None:
             result.append({"title": title, "note": ""})
             continue
@@ -213,7 +217,7 @@ async def _prepare_ingredients(
 
     prepared = [item for item in result if item is not None]
     resolved: dict[tuple[str, str], dict[str, Any]] = {}
-    for item in prepared:
+    for item, create_missing in zip(prepared, create_missing_flags, strict=True):
         for key, kind in (("unit", "units"), ("food", "foods")):
             entity = item.get(key)
             if not entity:
@@ -228,7 +232,9 @@ async def _prepare_ingredients(
                 raise ValueError(f"Ingredient {key} requires a name or id")
             cache_key = (kind, name.casefold())
             if cache_key not in resolved:
-                resolved[cache_key] = await client.resolve_ingredient_entity(kind, name)
+                resolved[cache_key] = await client.resolve_ingredient_entity(
+                    kind, name, create_missing=create_missing
+                )
             item[key] = resolved[cache_key]
     return prepared
 
