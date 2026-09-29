@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+from difflib import SequenceMatcher
 from typing import Any
 
 import httpx
@@ -88,6 +90,9 @@ class MealieClient:
         *,
         query: str | None = None,
         tags: list[str] | None = None,
+        categories: list[str] | None = None,
+        foods: list[str] | None = None,
+        cookbook: str | None = None,
         per_page: int = 25,
         page: int = 1,
     ) -> dict[str, Any]:
@@ -99,6 +104,12 @@ class MealieClient:
         }
         if tags:
             params["tags"] = tags
+        if categories:
+            params["categories"] = categories
+        if foods:
+            params["foods"] = foods
+        if cookbook:
+            params["cookbook"] = cookbook
         return await self._request("GET", "/api/recipes", params=params)
 
     async def get_recipe(self, slug: str) -> dict[str, Any]:
@@ -121,6 +132,16 @@ class MealieClient:
         if not isinstance(current, dict):
             raise MealieError(500, "Unexpected response from get_recipe", current)
         merged = {**current, **patch}
+        if isinstance(current.get("nutrition"), dict) and isinstance(patch.get("nutrition"), dict):
+            merged["nutrition"] = {**current["nutrition"], **patch["nutrition"]}
+        if "recipeServings" in patch and "recipeYield" not in patch:
+            old_yield = current.get("recipeYield") or ""
+            if re.fullmatch(
+                r"\s*\d+(?:[.,]\d+)?\s*(?:portion(?:en|s)?|person(?:en|s)?|servings?)\s*",
+                old_yield,
+                re.IGNORECASE,
+            ):
+                merged["recipeYield"] = ""
         return await self._request("PUT", f"/api/recipes/{slug}", json=merged)
 
     async def import_recipe_from_url(
@@ -135,8 +156,38 @@ class MealieClient:
             return await self.get_recipe(result)
         return result
 
+    async def import_recipe_from_html_or_json(
+        self, data: str, *, include_tags: bool = False, include_categories: bool = False
+    ) -> dict[str, Any]:
+        """Let Mealie import pasted structured data, then fetch the saved recipe."""
+        slug = await self._request(
+            "POST",
+            "/api/recipes/create/html-or-json",
+            json={
+                "data": data,
+                "includeTags": include_tags,
+                "includeCategories": include_categories,
+            },
+        )
+        if not isinstance(slug, str) or not slug:
+            raise MealieError(500, "Unexpected HTML/JSON import response", slug)
+        return await self.get_recipe(slug)
+
     async def delete_recipe(self, slug: str) -> None:
         await self._request("DELETE", f"/api/recipes/{slug}")
+
+    async def parse_ingredients(
+        self, ingredients: list[str], *, parser: str = "nlp"
+    ) -> list[dict[str, Any]]:
+        """Parse ingredient text with Mealie's own food and unit catalog."""
+        return await self._request(
+            "POST", "/api/parser/ingredients", json={"parser": parser, "ingredients": ingredients}
+        )
+
+    async def set_recipe_last_made(self, slug: str, timestamp: str) -> dict[str, Any]:
+        return await self._request(
+            "PATCH", f"/api/recipes/{slug}/last-made", json={"timestamp": timestamp}
+        )
 
     # ---- Meal plans --------------------------------------------------------------
 
@@ -146,11 +197,29 @@ class MealieClient:
             return result
         return []
 
-    async def list_meal_plan(self, start_date: str, end_date: str) -> dict[str, Any]:
+    async def list_meal_plan(
+        self, start_date: str, end_date: str, *, page: int = 1, per_page: int = 1000
+    ) -> dict[str, Any]:
         return await self._request(
             "GET",
             "/api/households/mealplans",
-            params={"start_date": start_date, "end_date": end_date, "perPage": 1000},
+            params={
+                "start_date": start_date,
+                "end_date": end_date,
+                "page": page,
+                "perPage": per_page,
+            },
+        )
+
+    async def get_meal_plan_entry(self, entry_id: int) -> dict[str, Any]:
+        return await self._request("GET", f"/api/households/mealplans/{entry_id}")
+
+    async def update_meal_plan_entry(self, entry_id: int, patch: dict[str, Any]) -> dict[str, Any]:
+        current = await self.get_meal_plan_entry(entry_id)
+        if not isinstance(current, dict):
+            raise MealieError(500, "Unexpected meal plan entry response", current)
+        return await self._request(
+            "PUT", f"/api/households/mealplans/{entry_id}", json={**current, **patch}
         )
 
     async def create_meal_plan_entry(
@@ -181,6 +250,15 @@ class MealieClient:
 
     async def create_tag(self, name: str) -> dict[str, Any]:
         return await self._request("POST", "/api/organizers/tags", json={"name": name})
+
+    async def get_tag(self, tag_id: str) -> dict[str, Any]:
+        return await self._request("GET", f"/api/organizers/tags/{tag_id}")
+
+    async def update_tag(self, tag_id: str, name: str) -> dict[str, Any]:
+        return await self._request("PUT", f"/api/organizers/tags/{tag_id}", json={"name": name})
+
+    async def delete_tag(self, tag_id: str) -> None:
+        await self._request("DELETE", f"/api/organizers/tags/{tag_id}")
 
     async def get_or_create_tag(self, name: str) -> dict[str, Any]:
         """Return existing tag by name (case-insensitive) or create it."""
@@ -267,10 +345,15 @@ class MealieClient:
         import base64
 
         try:
-            content = base64.b64decode(b64_data)
+            content = base64.b64decode(b64_data, validate=True)
+            if not content:
+                raise ValueError("empty image")
         except Exception as exc:
             raise MealieError(400, f"Invalid base64 data: {exc}") from exc
         return await self._upload_recipe_image(slug, content, content_type)
+
+    async def delete_recipe_image(self, slug: str) -> None:
+        await self._request("DELETE", f"/api/recipes/{slug}/image")
 
     # ---- Shopping lists ----------------------------------------------------------
 
@@ -284,34 +367,99 @@ class MealieClient:
             params={"perPage": 1000},
         )
 
-    async def list_shopping_list_items(self, list_id: str) -> dict[str, Any]:
+    async def list_shopping_recipe_references(self, list_id: str) -> list[dict[str, Any]]:
+        result = await self._request("GET", f"/api/households/shopping/lists/{list_id}")
+        if not isinstance(result, dict) or not isinstance(result.get("recipeReferences"), list):
+            raise MealieError(500, "Unexpected shopping list response", result)
+        return result["recipeReferences"]
+
+    async def add_recipe_to_shopping_list(
+        self, list_id: str, recipe_id: str, *, factor: float = 1
+    ) -> dict[str, Any]:
         return await self._request(
-            "GET",
-            "/api/households/shopping/items",
-            params={"shoppingListId": list_id, "perPage": 1000},
+            "POST",
+            f"/api/households/shopping/lists/{list_id}/recipe/{recipe_id}",
+            json={"recipeIncrementQuantity": factor},
         )
+
+    async def add_recipes_to_shopping_list(
+        self, list_id: str, recipes: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        return await self._request(
+            "POST", f"/api/households/shopping/lists/{list_id}/recipe", json=recipes
+        )
+
+    async def remove_recipe_from_shopping_list(
+        self, list_id: str, recipe_id: str, *, factor: float = 1
+    ) -> dict[str, Any]:
+        return await self._request(
+            "POST",
+            f"/api/households/shopping/lists/{list_id}/recipe/{recipe_id}/delete",
+            json={"recipeDecrementQuantity": factor},
+        )
+
+    async def get_shopping_list(self, list_id: str) -> dict[str, Any]:
+        return await self._request("GET", f"/api/households/shopping/lists/{list_id}")
+
+    async def rename_shopping_list(self, list_id: str, name: str) -> dict[str, Any]:
+        current = await self.get_shopping_list(list_id)
+        if not isinstance(current, dict):
+            raise MealieError(500, "Unexpected shopping list response", current)
+        return await self._request(
+            "PUT", f"/api/households/shopping/lists/{list_id}", json={**current, "name": name}
+        )
+
+    async def delete_shopping_list(self, list_id: str) -> None:
+        await self._request("DELETE", f"/api/households/shopping/lists/{list_id}")
+
+    async def list_shopping_list_items(self, list_id: str) -> dict[str, Any]:
+        result = await self._request("GET", f"/api/households/shopping/lists/{list_id}")
+        if not isinstance(result, dict) or not isinstance(result.get("listItems"), list):
+            raise MealieError(500, "Unexpected shopping list response", result)
+        return {"items": result["listItems"]}
 
     async def add_shopping_list_item(
         self,
         *,
         list_id: str,
         note: str,
+        quantity: float | None = None,
+        food_id: str | None = None,
+        unit_id: str | None = None,
     ) -> dict[str, Any]:
-        body = {"shoppingListId": list_id, "note": note, "isFood": False, "checked": False}
-        return await self._request("POST", "/api/households/shopping/items", json=body)
+        body = {"shoppingListId": list_id, "note": note, "checked": False}
+        if quantity is not None:
+            body["quantity"] = quantity
+        if food_id is not None:
+            body["foodId"] = food_id
+        if unit_id is not None:
+            body["unitId"] = unit_id
+        result = await self._request("POST", "/api/households/shopping/items", json=body)
+        if isinstance(result, dict):
+            for key in ("createdItems", "updatedItems"):
+                items = result.get(key)
+                if isinstance(items, list) and items and isinstance(items[0], dict):
+                    return items[0]
+        raise MealieError(500, "Unexpected shopping item response", result)
+
+    async def get_shopping_list_item(self, item_id: str) -> dict[str, Any]:
+        return await self._request("GET", f"/api/households/shopping/items/{item_id}")
+
+    async def update_shopping_list_item(
+        self, item_id: str, patch: dict[str, Any]
+    ) -> dict[str, Any]:
+        current = await self.get_shopping_list_item(item_id)
+        if not isinstance(current, dict):
+            raise MealieError(500, "Unexpected shopping item response", current)
+        return await self._request(
+            "PUT", f"/api/households/shopping/items/{item_id}", json={**current, **patch}
+        )
 
     async def check_off_shopping_item(
         self, item_id: str, *, checked: bool = True
     ) -> dict[str, Any]:
         """Toggle the checked state of a shopping list item."""
-        current = await self._request("GET", f"/api/households/shopping/items/{item_id}")
-        if not isinstance(current, dict):
-            raise MealieError(500, "Unexpected response fetching shopping item", current)
-        return await self._request(
-            "PUT",
-            f"/api/households/shopping/items/{item_id}",
-            json={**current, "checked": checked},
-        )
+        return await self.update_shopping_list_item(item_id, {"checked": checked})
 
     async def delete_shopping_list_item(self, item_id: str) -> None:
         await self._request("DELETE", f"/api/households/shopping/items/{item_id}")
@@ -324,16 +472,93 @@ class MealieClient:
             params["search"] = query
         return await self._request("GET", "/api/foods", params=params)
 
+    async def list_units(self, *, query: str | None = None, per_page: int = 50) -> dict[str, Any]:
+        return await self._request(
+            "GET", "/api/units", params={"search": query, "perPage": per_page}
+        )
+
+    async def resolve_ingredient_entity(
+        self,
+        kind: str,
+        name: str,
+        *,
+        create_missing: bool = False,
+        confirmed_similar_ids: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Reuse exact catalog entries; suggest similar ones before creation."""
+        if kind not in {"foods", "units"}:
+            raise ValueError("Only foods and units can be resolved")
+        items: list[dict[str, Any]] = []
+        page = 1
+        while True:
+            listing = await self._request(
+                "GET", f"/api/{kind}", params={"perPage": 1000, "page": page}
+            )
+            if not isinstance(listing, dict) or not isinstance(listing.get("items"), list):
+                raise MealieError(500, f"Unexpected {kind} listing", listing)
+            items.extend(listing["items"])
+            if page >= listing.get("totalPages", 1):
+                break
+            page += 1
+        for item in items:
+            names = [item.get("name", ""), item.get("abbreviation", "")]
+            names += [alias.get("name", "") for alias in item.get("aliases") or []]
+            if any(candidate.casefold() == name.casefold() for candidate in names):
+                return item
+        similar = [
+            item
+            for item in items
+            if SequenceMatcher(None, name.casefold(), (item.get("name") or "").casefold()).ratio()
+            >= 0.7
+        ]
+        if not create_missing or {item["id"] for item in similar} != set(
+            confirmed_similar_ids or []
+        ):
+            candidates = ", ".join(f"{item['name']} ({item['id']})" for item in similar[:5])
+            raise ValueError(
+                f"Unknown {kind} entry '{name}'. Candidates: {candidates or 'none'}. "
+                "Select an existing name, or confirm all candidate IDs with "
+                "create_missing=true and confirmed_similar_ids."
+            )
+        created = await self._request("POST", f"/api/{kind}", json={"name": name})
+        if not isinstance(created, dict) or not created.get("id"):
+            raise MealieError(500, f"Unexpected response creating {kind}: {name}", created)
+        return created
+
     # ---- Cookbooks ---------------------------------------------------------------
 
     async def list_cookbooks(self) -> dict[str, Any]:
         return await self._request("GET", "/api/households/cookbooks", params={"perPage": 1000})
 
     async def create_cookbook(
-        self, name: str, *, description: str = "", public: bool = False
+        self,
+        name: str,
+        *,
+        description: str = "",
+        public: bool = False,
+        query_filter_string: str = "",
     ) -> dict[str, Any]:
         return await self._request(
             "POST",
             "/api/households/cookbooks",
-            json={"name": name, "description": description, "public": public},
+            json={
+                "name": name,
+                "description": description,
+                "public": public,
+                "queryFilterString": query_filter_string,
+            },
         )
+
+    async def get_cookbook(self, cookbook_id: str) -> dict[str, Any]:
+        return await self._request("GET", f"/api/households/cookbooks/{cookbook_id}")
+
+    async def update_cookbook(self, cookbook_id: str, patch: dict[str, Any]) -> dict[str, Any]:
+        current = await self.get_cookbook(cookbook_id)
+        if not isinstance(current, dict):
+            raise MealieError(500, "Unexpected cookbook response", current)
+        return await self._request(
+            "PUT", f"/api/households/cookbooks/{cookbook_id}", json={**current, **patch}
+        )
+
+    async def delete_cookbook(self, cookbook_id: str) -> None:
+        await self._request("DELETE", f"/api/households/cookbooks/{cookbook_id}")
