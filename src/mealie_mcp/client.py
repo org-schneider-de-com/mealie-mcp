@@ -124,7 +124,9 @@ class MealieClient:
             return result["slug"]
         raise MealieError(500, "Unexpected response from create_recipe", result)
 
-    async def update_recipe(self, slug: str, patch: dict[str, Any]) -> dict[str, Any]:
+    async def update_recipe(
+        self, slug: str, patch: dict[str, Any], *, replace_nutrition: bool = False
+    ) -> dict[str, Any]:
         """Partially update a recipe. Mealie requires the full resource on PUT,
         so we fetch, merge, and send back.
         """
@@ -132,7 +134,11 @@ class MealieClient:
         if not isinstance(current, dict):
             raise MealieError(500, "Unexpected response from get_recipe", current)
         merged = {**current, **patch}
-        if isinstance(current.get("nutrition"), dict) and isinstance(patch.get("nutrition"), dict):
+        if (
+            not replace_nutrition
+            and isinstance(current.get("nutrition"), dict)
+            and isinstance(patch.get("nutrition"), dict)
+        ):
             merged["nutrition"] = {**current["nutrition"], **patch["nutrition"]}
         if "recipeServings" in patch and "recipeYield" not in patch:
             old_yield = current.get("recipeYield") or ""
