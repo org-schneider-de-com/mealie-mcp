@@ -112,6 +112,15 @@ def _summarize_recipe(recipe: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _unstructured_ingredients(recipe: dict[str, Any]) -> list[dict[str, Any]]:
+    """Point out imported rows that cannot scale from servings."""
+    return [
+        {"index": index, "note": row.get("note") or row.get("display") or ""}
+        for index, row in enumerate(recipe.get("recipeIngredient") or [])
+        if not row.get("title") and (not row.get("quantity") or not row.get("food"))
+    ]
+
+
 def _app_context(ctx: Context) -> AppContext:
     return ctx.request_context.lifespan_context
 
@@ -886,6 +895,25 @@ def build_server() -> FastMCP:
             return await _client(ctx).import_recipe_from_url(url)
         except MealieError as exc:
             raise RuntimeError(str(exc)) from exc
+
+    @mcp.tool()
+    async def import_recipe_from_html_or_json(
+        ctx: Context, data: str, include_tags: bool = False, include_categories: bool = False
+    ) -> dict[str, Any]:
+        """Import pasted recipe HTML/JSON through Mealie and inspect its ingredients.
+
+        The returned recipe includes the numeric servings and all ingredient rows;
+        unstructuredIngredients points to rows needing manual correction for scaling.
+        """
+        if not data.strip():
+            raise ValueError("Recipe data must not be empty")
+        try:
+            recipe = await _client(ctx).import_recipe_from_html_or_json(
+                data, include_tags=include_tags, include_categories=include_categories
+            )
+        except MealieError as exc:
+            raise RuntimeError(str(exc)) from exc
+        return {"recipe": recipe, "unstructuredIngredients": _unstructured_ingredients(recipe)}
 
     @mcp.tool(annotations=ToolAnnotations(destructive=True))
     async def delete_recipe(ctx: Context, slug: str) -> dict[str, Any]:

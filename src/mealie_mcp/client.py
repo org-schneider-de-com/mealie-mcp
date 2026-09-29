@@ -144,6 +144,23 @@ class MealieClient:
             return await self.get_recipe(result)
         return result
 
+    async def import_recipe_from_html_or_json(
+        self, data: str, *, include_tags: bool = False, include_categories: bool = False
+    ) -> dict[str, Any]:
+        """Let Mealie import pasted structured data, then fetch the saved recipe."""
+        slug = await self._request(
+            "POST",
+            "/api/recipes/create/html-or-json",
+            json={
+                "data": data,
+                "includeTags": include_tags,
+                "includeCategories": include_categories,
+            },
+        )
+        if not isinstance(slug, str) or not slug:
+            raise MealieError(500, "Unexpected HTML/JSON import response", slug)
+        return await self.get_recipe(slug)
+
     async def delete_recipe(self, slug: str) -> None:
         await self._request("DELETE", f"/api/recipes/{slug}")
 
