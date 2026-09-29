@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -12,6 +13,7 @@ from urllib.parse import urlsplit, urlunsplit
 import uvicorn
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.types import ToolAnnotations
+from pydantic import BaseModel, Field
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
@@ -126,11 +128,115 @@ def _section_title(line: str) -> str | None:
     return None
 
 
-def _ingredient_from_line(line: str) -> dict[str, Any]:
-    title = _section_title(line)
-    if title is not None:
-        return {"title": title, "note": "", "disableAmount": True}
-    return {"note": line}
+class RecipeIngredientInput(BaseModel):
+    """A Mealie ingredient whose amount can be scaled with recipe servings."""
+
+    quantity: float | None = Field(default=None, ge=0)
+    unit: str | None = None
+    food: str | None = None
+    note: str | None = None
+    title: str | None = None
+    create_missing: bool = False
+
+
+_RANGE = re.compile(r"\b\d+(?:[.,]\d+)?\s*(?:[-–]|bis)\s*\d+(?:[.,]\d+)?\b", re.IGNORECASE)
+_EXPLICIT_UNIT = re.compile(
+    r"^\s*(?:ca\.?\s*)?\d+(?:[.,]\d+)?\s*(?:kg|g|ml|l|el|tl)\b", re.IGNORECASE
+)
+_SERVING_LABEL = re.compile(
+    r"\s*(\d+(?:[.,]\d+)?)\s*(?:portion(?:en|s)?|person(?:en|s)?|servings?)\s*",
+    re.IGNORECASE,
+)
+
+
+async def _prepare_ingredients(
+    client: MealieClient, ingredients: list[str | RecipeIngredientInput]
+) -> list[dict[str, Any]]:
+    """Preserve sections, parse text in one call, and accept exact structured amounts."""
+    result: list[dict[str, Any] | None] = []
+    create_missing_flags: list[bool] = []
+    lines: list[str] = []
+    positions: list[int] = []
+    for item in ingredients:
+        if isinstance(item, RecipeIngredientInput):
+            create_missing_flags.append(item.create_missing)
+            if item.title:
+                if item.quantity or item.food or item.unit:
+                    raise ValueError("A section title cannot also be an ingredient")
+                result.append({"title": item.title, "note": ""})
+            else:
+                if item.quantity and not item.food:
+                    raise ValueError("A quantified ingredient needs a food name")
+                result.append(
+                    {
+                        "quantity": item.quantity or 0,
+                        "unit": item.unit,
+                        "food": item.food,
+                        "note": item.note or "",
+                    }
+                )
+            continue
+
+        title = _section_title(item)
+        create_missing_flags.append(False)
+        if title is not None:
+            result.append({"title": title, "note": ""})
+            continue
+        if _RANGE.search(item):
+            raise ValueError(
+                f"Ingredient '{item}' has a range. Choose an exact amount and pass "
+                "{quantity, unit, food, note} for reliable serving scaling."
+            )
+        positions.append(len(result))
+        lines.append(item)
+        result.append(None)
+
+    if lines:
+        parsed = await client.parse_ingredients(lines)
+        if not isinstance(parsed, list) or len(parsed) != len(lines):
+            raise ValueError("Mealie's ingredient parser returned an unexpected result")
+        for position, line, row in zip(positions, lines, parsed, strict=True):
+            ingredient = row.get("ingredient") if isinstance(row, dict) else None
+            if not isinstance(ingredient, dict):
+                raise ValueError(f"Mealie could not parse ingredient '{line}'")
+            if re.search(r"\d", line) and (
+                not ingredient.get("quantity") or not ingredient.get("food")
+            ):
+                raise ValueError(
+                    f"Mealie could not resolve amount and food for '{line}'. "
+                    "Pass it as {quantity, unit, food, note}, or add the food/unit to Mealie."
+                )
+            if _EXPLICIT_UNIT.search(line) and not ingredient.get("unit"):
+                raise ValueError(
+                    f"Mealie could not resolve the unit for '{line}'. "
+                    "Pass it as {quantity, unit, food, note}, or add the unit to Mealie."
+                )
+            # Let Mealie render the scaled value from quantity/unit/food.
+            ingredient.pop("display", None)
+            result[position] = ingredient
+
+    prepared = [item for item in result if item is not None]
+    resolved: dict[tuple[str, str], dict[str, Any]] = {}
+    for item, create_missing in zip(prepared, create_missing_flags, strict=True):
+        for key, kind in (("unit", "units"), ("food", "foods")):
+            entity = item.get(key)
+            if not entity:
+                continue
+            if isinstance(entity, str):
+                entity = {"name": entity}
+            if entity.get("id"):
+                item[key] = entity
+                continue
+            name = entity.get("name")
+            if not name:
+                raise ValueError(f"Ingredient {key} requires a name or id")
+            cache_key = (kind, name.casefold())
+            if cache_key not in resolved:
+                resolved[cache_key] = await client.resolve_ingredient_entity(
+                    kind, name, create_missing=create_missing
+                )
+            item[key] = resolved[cache_key]
+    return prepared
 
 
 def _instruction_from_line(line: str) -> dict[str, Any]:
@@ -149,7 +255,7 @@ def _build_recipe_patch(
     prep_time: str | None = None,
     cook_time: str | None = None,
     total_time: str | None = None,
-    ingredients: list[str] | None = None,
+    ingredients: list[dict[str, Any]] | None = None,
     instructions: list[str] | None = None,
     notes: list[str] | None = None,
     tag_objects: list[dict[str, Any]] | None = None,
@@ -162,7 +268,15 @@ def _build_recipe_patch(
     if description is not None:
         patch["description"] = description
     if recipe_yield is not None:
-        patch["recipeYield"] = recipe_yield
+        # A fixed "3 portions" label becomes misleading when the user scales
+        # recipeServings to four. Mealie's numeric field is the source of truth.
+        serving_label = _SERVING_LABEL.fullmatch(recipe_yield)
+        if serving_label:
+            if recipe_servings is None:
+                recipe_servings = float(serving_label.group(1).replace(",", "."))
+            patch["recipeYield"] = ""
+        else:
+            patch["recipeYield"] = recipe_yield
     if recipe_servings is not None:
         patch["recipeServings"] = recipe_servings
     if prep_time is not None:
@@ -172,7 +286,7 @@ def _build_recipe_patch(
     if total_time is not None:
         patch["totalTime"] = total_time
     if ingredients is not None:
-        patch["recipeIngredient"] = [_ingredient_from_line(line) for line in ingredients]
+        patch["recipeIngredient"] = ingredients
     if instructions is not None:
         patch["recipeInstructions"] = [_instruction_from_line(line) for line in instructions]
     if notes is not None:
@@ -447,7 +561,7 @@ def build_server() -> FastMCP:
         prep_time: str | None = None,
         cook_time: str | None = None,
         total_time: str | None = None,
-        ingredients: list[str] | None = None,
+        ingredients: list[str | RecipeIngredientInput] | None = None,
         instructions: list[str] | None = None,
         notes: list[str] | None = None,
         tags: list[str] | None = None,
@@ -460,19 +574,21 @@ def build_server() -> FastMCP:
         tool does both: it POSTs the shell, then PUTs the full body so the
         recipe is saved with all content.
 
-        Ingredient and instruction lines that start with "# ", "## ", or "### "
-        become section headers (e.g. "### Filling"). All other lines are plain
-        ingredient text / instruction steps. ``notes`` are free-text notes.
+        Ingredient strings are parsed by Mealie into quantity, unit and food.
+        Prefer objects like {"quantity": 400, "unit": "g", "food": "Nudeln"}
+        for exact, scalable amounts. "### Filling" creates a section.
 
         Args:
             name: Recipe name.
             description: Short summary shown above the recipe.
-            recipe_yield: Free-text yield, e.g. "8 servings" or "1 loaf".
+            recipe_yield: Free-text product yield such as "1 loaf". Use
+                recipe_servings alone for a number of people.
             recipe_servings: Numeric serving count, e.g. 4.
             prep_time: Free-text prep time, e.g. "15 min".
             cook_time: Free-text cook time, e.g. "30 min".
             total_time: Free-text total time.
-            ingredients: Ingredient lines; "### Base" style lines become sections.
+            ingredients: Structured ingredients or text for Mealie to parse; use exact
+                quantities for scaling. "### Base" creates a section.
             instructions: Ordered steps; "### Base" style lines become sections.
             notes: Free-text recipe notes (one entry per note).
             tags: Tag names to apply. Tags are created in Mealie if they don't exist.
@@ -480,6 +596,11 @@ def build_server() -> FastMCP:
             tools: Tool/equipment names to apply. Tools are created if they don't exist.
         """
         client = _client(ctx)
+        # Validate and parse before creating the recipe shell. A failed parser
+        # must not leave an empty recipe behind.
+        prepared_ingredients = (
+            await _prepare_ingredients(client, ingredients) if ingredients is not None else None
+        )
         try:
             slug = await client.create_recipe(name)
         except MealieError as exc:
@@ -513,7 +634,7 @@ def build_server() -> FastMCP:
             prep_time=prep_time,
             cook_time=cook_time,
             total_time=total_time,
-            ingredients=ingredients,
+            ingredients=prepared_ingredients,
             instructions=instructions,
             notes=notes,
             tag_objects=tag_objects,
@@ -544,7 +665,7 @@ def build_server() -> FastMCP:
         prep_time: str | None = None,
         cook_time: str | None = None,
         total_time: str | None = None,
-        ingredients: list[str] | None = None,
+        ingredients: list[str | RecipeIngredientInput] | None = None,
         instructions: list[str] | None = None,
         notes: list[str] | None = None,
         tags: list[str] | None = None,
@@ -553,20 +674,21 @@ def build_server() -> FastMCP:
     ) -> dict[str, Any]:
         """Update fields on an existing recipe. Only provided fields are changed.
 
-        Section-header rules for ``ingredients`` and ``instructions`` match
-        ``create_recipe``: lines starting with "# ", "## ", or "### " become
-        section headers.
+        Ingredient strings are parsed by Mealie; structured objects allow exact
+        quantities, units and foods. Sections start with "### ".
 
         Args:
             slug: Recipe slug returned by ``create_recipe`` or ``search_recipes``.
             name: New recipe name.
             description: Recipe description / summary.
-            recipe_yield: Free-text yield, e.g. "8 servings" or "1 loaf".
+            recipe_yield: Free-text product yield such as "1 loaf". Use
+                recipe_servings alone for a number of people.
             recipe_servings: Numeric serving count, e.g. 4.
             prep_time: Free-text prep time, e.g. "15 min".
             cook_time: Free-text cook time, e.g. "30 min".
             total_time: Free-text total time.
-            ingredients: Ingredient lines; "### Base" style lines become sections.
+            ingredients: Structured ingredients or text for Mealie to parse. This
+                replaces the ingredient list; "### Base" creates a section.
             instructions: Ordered steps; "### Base" style lines become sections.
             notes: Free-text recipe notes (one entry per note).
             tags: Tag names to apply (replaces existing tags). Tags are created if they don't exist.
@@ -576,6 +698,9 @@ def build_server() -> FastMCP:
                 don't exist.
         """
         client = _client(ctx)
+        prepared_ingredients = (
+            await _prepare_ingredients(client, ingredients) if ingredients is not None else None
+        )
 
         tag_objects: list[dict[str, Any]] | None = None
         if tags is not None:
@@ -606,7 +731,7 @@ def build_server() -> FastMCP:
             prep_time=prep_time,
             cook_time=cook_time,
             total_time=total_time,
-            ingredients=ingredients,
+            ingredients=prepared_ingredients,
             instructions=instructions,
             notes=notes,
             tag_objects=tag_objects,
@@ -910,6 +1035,31 @@ def build_server() -> FastMCP:
             raise RuntimeError(str(exc)) from exc
         items = payload.get("items") if isinstance(payload, dict) else payload
         return items or []
+
+    @mcp.tool()
+    async def list_units(
+        ctx: Context, query: str | None = None, limit: int = 50
+    ) -> list[dict[str, Any]]:
+        """List Mealie measurement units, optionally filtered by name or abbreviation."""
+        try:
+            payload = await _client(ctx).list_units(query=query, per_page=max(1, min(limit, 1000)))
+        except MealieError as exc:
+            raise RuntimeError(str(exc)) from exc
+        return payload.get("items", []) if isinstance(payload, dict) else payload or []
+
+    @mcp.tool()
+    async def parse_ingredients(
+        ctx: Context, ingredients: list[str], parser: Literal["nlp", "brute", "openai"] = "nlp"
+    ) -> list[dict[str, Any]]:
+        """Preview Mealie's parsed quantities, units and foods without saving a recipe.
+
+        Use this to inspect text before creating a recipe. For ambiguous ranges,
+        choose an exact quantity and pass a structured ingredient instead.
+        """
+        try:
+            return await _client(ctx).parse_ingredients(ingredients, parser=parser)
+        except MealieError as exc:
+            raise RuntimeError(str(exc)) from exc
 
     @mcp.tool()
     async def list_recipe_tools(ctx: Context) -> list[dict[str, Any]]:

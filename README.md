@@ -14,7 +14,7 @@ lists, and organize cookbooks on your own Mealie instance.
 | --- | --- |
 | `search_recipes(query?, tags?, limit?)` | Search recipes; returns slug, name, description, tags, categories |
 | `get_recipe(slug)` | Full recipe JSON for a slug |
-| `create_recipe(name, description?, recipe_yield?, recipe_servings?, prep_time?, cook_time?, total_time?, ingredients?, instructions?, notes?, tags?, categories?, tools?)` | Create a recipe fully populated in one call. Lines starting with `#`/`##`/`###` in `ingredients`/`instructions` become section headers. Tags, categories, and tools are auto-created if missing. |
+| `create_recipe(name, description?, recipe_yield?, recipe_servings?, prep_time?, cook_time?, total_time?, ingredients?, instructions?, notes?, tags?, categories?, tools?)` | Create a recipe fully populated in one call. Ingredient text is parsed into amount, unit, and food; exact ingredient objects are also accepted. Lines starting with `#`/`##`/`###` become sections. |
 | `update_recipe(slug, ...same fields as create_recipe)` | Patch an existing recipe; only provided fields change |
 | `import_recipe_from_url(url)` | Scrape and import a recipe from an external URL |
 | `delete_recipe(slug)` | **Destructive.** Permanently delete a recipe |
@@ -32,6 +32,37 @@ lists, and organize cookbooks on your own Mealie instance.
 | `list_recipe_tools()` | List all recipe tools/equipment |
 | `set_recipe_tools(slug, tools[])` | Replace a recipe's tools/equipment (auto-creates; pass `[]` to clear) |
 | `list_foods(query?, limit?)` | List foods/ingredients known to Mealie |
+| `list_units(query?, limit?)` | List measurement units known to Mealie |
+| `parse_ingredients(ingredients[], parser?)` | Preview Mealie's ingredient parser (`nlp`, `brute`, or `openai`) |
+
+### Scalable ingredient amounts
+
+Supply `recipe_servings` as the numeric serving count, and give each ingredient an
+exact quantity, unit, and food. For example:
+
+```json
+{
+  "name": "Hähnchen-Reis-Pfanne",
+  "recipe_servings": 3,
+  "ingredients": [
+    {"quantity": 550, "unit": "g", "food": "Hähnchenbrust"},
+    {"quantity": 300, "unit": "g", "food": "Reis"},
+    {"quantity": 2, "food": "Paprika"},
+    {"title": "Würzen"},
+    {"food": "Salz", "note": "nach Geschmack"}
+  ]
+}
+```
+
+The server looks up existing foods and units by name. If a name is unknown, it
+returns similar catalog entries for selection. After confirming a genuinely new
+name, set `"create_missing": true` on that structured ingredient to create it.
+Plain text such as `"300 g Reis"` is sent to Mealie's own parser. If the parser
+cannot identify an amount and food, creation fails with an actionable message
+instead of silently saving a note-only ingredient. A range such as `400-500 g`
+needs one chosen quantity to scale reliably. A heading is `"### Würzen"` or
+`{"title": "Würzen"}`. Use `recipe_servings` alone for the number of people;
+`recipe_yield` describes a different yield such as `"1 loaf"`.
 
 ### Meal plan
 
