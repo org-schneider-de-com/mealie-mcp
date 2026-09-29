@@ -53,7 +53,7 @@ servers was tested against the user's live installation.
 | Plan and inspect the week | Yes: date range, today, add, delete | Yes: date range, today, add, delete | Partly: date range tool sends `startDate`/`endDate`, while supplied OpenAPI requires `start_date`/`end_date`; today/add/delete exist | Raw: list, today, create, edit and delete |
 | Snack, drink and dessert slots | Partly: tool restricts type to breakfast/lunch/dinner/side; API has 7 types | Yes: all 7 types in schema | Yes: unrestricted string input | Raw: all 7 types |
 | Edit an entry, recurring rules, random meals | No direct tools; delete and recreate an entry | No | No | Raw: PUT entry, meal-plan rules and random endpoint |
-| Create and use shopping lists | Yes: create/list; list items, free-text add, tick and delete; cannot rename/delete list or edit item quantity | Partly: list/get and item add/edit/tick/delete, but no create-list tool | Partly: create/get/delete list and add item; no item tick/edit/delete | Raw: full list and item CRUD plus bulk creation |
+| Create and use shopping lists | Partly: create/list, free-text add and tick; `list_shopping_list_items` uses an undocumented filter and may include items from other lists; cannot rename/delete list or edit item quantity | Partly: list/get and item edit/tick/delete, but no create-list tool; item creation parses the API's collection response as a single item and may fail after the write | Partly: create/get/delete list and add item; no item tick/edit/delete | Raw: full list and item CRUD plus bulk creation |
 | Transfer recipe ingredients to a shopping list | No direct tool | Yes for one recipe at a time | No | Raw: single and bulk recipe-to-list routes |
 | Make one shopping list from the weekly plan | No end-to-end tool | Agent must loop over plan entries and add recipes individually | No | Agent must compose plan lookup and bulk recipe-to-list call |
 | Nutrition and household diet organisation | Read full recipe, tag/category support; no nutrition edit | Recipe read projection omits nutrition; no nutrition write; tags/categories can be created but not assigned by recipe tools | Nutrition update and full recipe read; no tag/category management tools | Raw: nutrition, tags, categories and settings |
@@ -106,6 +106,10 @@ For this household, continue the existing fork and fill workflow gaps in order:
 This order follows the actual everyday chain from planning to groceries.
 More endpoint coverage can be added selectively without exposing hundreds of
 administrative operations to the agent.
+
+See [the operation-level family function audit](family-function-audit-2026-09-29.md)
+for every relevant step, exact tool names, and API route groups. Its more
+specific findings supersede a broad `Yes` in the summary above.
 
 ## Verification and limits
 
