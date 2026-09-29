@@ -69,6 +69,10 @@ examined recipe schema; tags can express dietary choices, but they do not
 automatically verify ingredients for allergies or lactose intolerance. Mealie's
 [FAQ](https://mealie.io/documentation/getting-started/faq/#how-do-i-enable-nutritional-values)
 also says nutritional values remain static when servings or yield change.
+Recipe cooking times can guide a busy week, but the supplied API has no
+dedicated price/budget, leftover, expiry-date, or pantry inventory model.
+Those concerns can be written into meal-plan text or tags, without becoming
+validated calculations.
 
 The fork uses a single configured Mealie API token behind its PocketID/OAuth
 protected MCP endpoint. Its callers therefore act as the same Mealie account;
