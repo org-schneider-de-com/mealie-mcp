@@ -138,6 +138,11 @@ class MealieClient:
     async def delete_recipe(self, slug: str) -> None:
         await self._request("DELETE", f"/api/recipes/{slug}")
 
+    async def set_recipe_last_made(self, slug: str, timestamp: str) -> dict[str, Any]:
+        return await self._request(
+            "PATCH", f"/api/recipes/{slug}/last-made", json={"timestamp": timestamp}
+        )
+
     # ---- Meal plans --------------------------------------------------------------
 
     async def get_todays_meal_plan(self) -> list[dict[str, Any]]:

@@ -6,6 +6,7 @@ import logging
 import os
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Literal
 from urllib.parse import urlsplit, urlunsplit
 
@@ -379,6 +380,28 @@ def build_server() -> FastMCP:
         """Fetch the full recipe JSON for a given slug."""
         try:
             return await _client(ctx).get_recipe(slug)
+        except MealieError as exc:
+            raise RuntimeError(str(exc)) from exc
+
+    @mcp.tool()
+    async def set_recipe_last_made(
+        ctx: Context, slug: str, cooked_at: str, confirmed: bool
+    ) -> dict[str, Any]:
+        """Set lastMade only after the user confirms the recipe was cooked.
+
+        A planned meal is not proof of cooking. Provide an ISO timestamp with
+        timezone, e.g. 2026-09-29T18:00:00+02:00.
+        """
+        if not confirmed:
+            raise ValueError("Explicit cooking confirmation is required")
+        try:
+            parsed = datetime.fromisoformat(cooked_at)
+        except ValueError as exc:
+            raise ValueError("Provide an ISO timestamp with timezone") from exc
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            raise ValueError("Provide an ISO timestamp with timezone")
+        try:
+            return await _client(ctx).set_recipe_last_made(slug, cooked_at)
         except MealieError as exc:
             raise RuntimeError(str(exc)) from exc
 
