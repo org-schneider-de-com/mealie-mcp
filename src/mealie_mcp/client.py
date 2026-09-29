@@ -88,6 +88,9 @@ class MealieClient:
         *,
         query: str | None = None,
         tags: list[str] | None = None,
+        categories: list[str] | None = None,
+        foods: list[str] | None = None,
+        cookbook: str | None = None,
         per_page: int = 25,
         page: int = 1,
     ) -> dict[str, Any]:
@@ -99,6 +102,12 @@ class MealieClient:
         }
         if tags:
             params["tags"] = tags
+        if categories:
+            params["categories"] = categories
+        if foods:
+            params["foods"] = foods
+        if cookbook:
+            params["cookbook"] = cookbook
         return await self._request("GET", "/api/recipes", params=params)
 
     async def get_recipe(self, slug: str) -> dict[str, Any]:

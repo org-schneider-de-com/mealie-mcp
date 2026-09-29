@@ -357,22 +357,45 @@ def build_server() -> FastMCP:
         ctx: Context,
         query: str | None = None,
         tags: list[str] | None = None,
+        categories: list[str] | None = None,
+        foods: list[str] | None = None,
+        cookbook: str | None = None,
         limit: int = 25,
-    ) -> list[dict[str, Any]]:
+        page: int = 1,
+        per_page: int | None = None,
+    ) -> dict[str, Any]:
         """Search recipes in Mealie.
 
         Args:
             query: Free-text search across recipe names and descriptions.
-            tags: Optional list of tag slugs to filter by.
-            limit: Maximum number of recipes to return (default 25, max 100).
+            tags: Tag names, slugs or IDs to filter by.
+            categories: Category names, slugs or IDs.
+            foods: Food names or IDs.
+            cookbook: Cookbook slug or ID.
+            limit: Page size for existing callers (default 25).
+            page: One-based page number.
+            per_page: Page size, overrides limit when supplied.
         """
-        per_page = max(1, min(limit, 100))
+        if page < 1 or (per_page if per_page is not None else limit) < 1:
+            raise ValueError("page and page size must be positive")
         try:
-            payload = await _client(ctx).search_recipes(query=query, tags=tags, per_page=per_page)
+            payload = await _client(ctx).search_recipes(
+                query=query,
+                tags=tags,
+                categories=categories,
+                foods=foods,
+                cookbook=cookbook,
+                page=page,
+                per_page=per_page if per_page is not None else limit,
+            )
         except MealieError as exc:
             raise RuntimeError(str(exc)) from exc
-        items = payload.get("items") if isinstance(payload, dict) else payload
-        return [_summarize_recipe(r) for r in (items or [])]
+        if not isinstance(payload, dict):
+            raise RuntimeError("Unexpected recipe search response")
+        return {
+            **payload,
+            "items": [_summarize_recipe(r) for r in payload.get("items", [])],
+        }
 
     @mcp.tool()
     async def get_recipe(ctx: Context, slug: str) -> dict[str, Any]:
