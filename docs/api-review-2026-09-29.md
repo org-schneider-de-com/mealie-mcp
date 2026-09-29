@@ -1,5 +1,11 @@
 # Mealie API and MCP review — 29 September 2026
 
+> This is a capability audit, not the implementation target. The later
+> [agreed MCP scope](mcp-scope-and-implementation-2026-09-29.md) keeps Mealie
+> responsible for ingredient scaling, shopping-list consolidation and data
+> storage. The assistant composes native API tools; the MCP does not build a
+> separate weekly shopping synchronization engine.
+
 ## Basis
 
 - The supplied `openapi.json` identifies itself as Mealie `nightly` and contains
@@ -90,22 +96,15 @@ separate design if they matter.
 | [cometto2007/mealie-mcp-server](https://github.com/cometto2007/mealie-mcp-server) | 21 tools. Foods/units and nutrition are useful, but recipe creation takes two calls, shopping items cannot be checked off through tools, and its weekly date filter does not match the supplied API. No equivalent PocketID/OAuth resource handling was found. |
 | [djwmarcx/better-mealie-mcp](https://github.com/djwmarcx/better-mealie-mcp) | OpenAPI generated against v3.28.0, 266 operations in its bundled spec. Best route coverage, but no curated weekly-plan-to-shopping workflow. The agent must sequence low-level calls and handle data shapes. Its README estimates ~61k tokens for all tools in slim mode; groups can be filtered. No equivalent PocketID/OAuth resource handling was found. |
 
-For this household, continue the existing fork and fill workflow gaps in order:
-
-1. **Weekly plan → shared shopping list:** select planned recipes and desired
-   servings, call the API's bulk recipe-to-list route, preserve existing manual
-   items, and return a reviewable list.
-2. **Shopping list editing:** structured amount/food/unit, change quantities,
-   check items, and create/rename lists with clear deduplication behaviour.
-3. **Meal-plan editing and all seven meal types:** change an entry in place,
-   then add optional recurring rules and random suggestions only if useful.
-4. **Recipe reuse:** favourites, cookbooks, filtered searches and nutrition
-   fields as requested. Check user-specific access before enabling invitations
-   or other household administration through MCP.
-
-This order follows the actual everyday chain from planning to groceries.
-More endpoint coverage can be added selectively without exposing hundreds of
-administrative operations to the agent.
+For this household, retain the existing fork and first correct its shopping-list
+API contract, then expose native recipe-to-list and full meal-plan operations.
+The assistant asks for desired servings when adding planned recipes to a chosen
+list. It does not persist a serving count on plan entries or maintain its own
+shopping state. Cookbook and tag operations belong to the agreed initial scope;
+personal favourites and household administration do not. An optional BLS
+nutrition helper is the explicit exception to this narrow API-adapter scope.
+The [agreed scope and PR sequence](mcp-scope-and-implementation-2026-09-29.md)
+supersedes the earlier roadmap implied by this audit.
 
 See [the operation-level family function audit](family-function-audit-2026-09-29.md)
 for every relevant step, exact tool names, and API route groups. Its more
