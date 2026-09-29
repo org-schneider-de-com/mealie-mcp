@@ -1,6 +1,6 @@
 # Mealie: vollständige Funktionsprüfung für den Familienalltag
 
-Stand: 29. September 2026. Verglichen wurden der bereitgestellte `openapi.json`-Export (`nightly`, 182 Pfade, 266 HTTP-Operationen), der Quellcode der vier genannten Repositories und drei Rezept-ZIP-Exporte. **Statische Prüfung:** Es gab keine Verbindung zur Mealie-Instanz des Nutzers. Ein vorhandener MCP-Aufruf ist daher kein Nachweis eines erfolgreichen Ende-zu-Ende-Ablaufs. `better-mealie-mcp` generiert Werkzeuge aus einer eingebauten v3.28.0-OpenAPI mit denselben 266 Methoden/Pfad-Kombinationen; Gleichheit aller Schemata und Kompatibilität mit der laufenden Instanz sind offen.
+Stand: 29. September 2026. Verglichen wurden der bereitgestellte `openapi.json`-Export (`nightly`, 182 Pfade, 266 HTTP-Operationen), der Quellcode der vier genannten Repositories und drei Rezept-ZIP-Exporte. Die fünf Tabellen prüfen **60 einzelne Familienfunktionen**. **Statische Prüfung:** Es gab keine Verbindung zur Mealie-Instanz des Nutzers. Ein vorhandener MCP-Aufruf ist daher kein Nachweis eines erfolgreichen Ende-zu-Ende-Ablaufs. `better-mealie-mcp` generiert Werkzeuge aus einer eingebauten v3.28.0-OpenAPI mit denselben 266 Methoden/Pfad-Kombinationen; Gleichheit aller Schemata und Kompatibilität mit der laufenden Instanz sind offen.
 
 ## Leseschlüssel
 
@@ -131,3 +131,5 @@ Der Fork schützt seinen MCP-Zugang per PocketID/OAuth, verwendet für Mealie ab
 ## Prüfbarkeit und Grenzen
 
 Quellen im Checkout: `upload/openapi.json`; `mealie-mcp/src/mealie_mcp/{server,client}.py`; `mealie-mcp-ts/src/{tools,types,api}.ts`; `mealie-mcp-server/src/tools/{recipes,mealplans,shopping,foods_units}.py`; `better-mealie-mcp/{MEALIE_VERSION,server.py,TOOLS.md}` sowie die drei ZIP-Exporte. Die Statusangaben beziehen sich auf diese konkreten Code-Stände. API-Schema und vorhandener Code belegen weder Live-Berechtigungen noch Laufzeitverhalten eines bestimmten Mealie-Releases. Besonders deutsche NLP-Zerlegung, Mengenbereiche, Antwortschemata und die v3.28.0/nightly-Unterschiede sind gegen die tatsächlich laufende Instanz zu prüfen.
+
+Quellstände: Fork-Basis `53364d772aa9c6482855ec071127c5d90eb04a91` plus Entwurfs-PR #1; TS `6a3ab3be05836cac9bc0108a0101d61867a74931`; Cometto `4d2d384fa8041bdf2ae14a86e3bcd3fb2c4911d0`; Better `4d16206c843cf17154f49259b7608d901b4e3c56`.
