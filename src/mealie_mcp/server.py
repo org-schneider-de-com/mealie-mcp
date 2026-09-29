@@ -3,15 +3,19 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
+import re
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any, Literal
 from urllib.parse import urlsplit, urlunsplit
 
 import uvicorn
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.types import ToolAnnotations
+from pydantic import BaseModel, Field
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
@@ -21,7 +25,7 @@ from .client import MealieClient, MealieError
 
 logger = logging.getLogger(__name__)
 
-EntryType = Literal["breakfast", "lunch", "dinner", "side"]
+EntryType = Literal["breakfast", "lunch", "dinner", "side", "snack", "drink", "dessert"]
 
 
 @dataclass
@@ -110,12 +114,42 @@ def _summarize_recipe(recipe: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _unstructured_ingredients(recipe: dict[str, Any]) -> list[dict[str, Any]]:
+    """Point out imported rows that cannot scale from servings."""
+    return [
+        {"index": index, "note": row.get("note") or row.get("display") or ""}
+        for index, row in enumerate(recipe.get("recipeIngredient") or [])
+        if not row.get("title") and (not row.get("quantity") or not row.get("food"))
+    ]
+
+
 def _app_context(ctx: Context) -> AppContext:
     return ctx.request_context.lifespan_context
 
 
 def _client(ctx: Context) -> MealieClient:
     return _app_context(ctx).client
+
+
+class ShoppingRecipeInput(BaseModel):
+    recipe_id: str
+    factor: float = Field(default=1, gt=0)
+
+
+def _positive_factor(factor: float) -> float:
+    if not math.isfinite(factor) or factor <= 0:
+        raise ValueError("Recipe quantity factor must be positive and finite")
+    return factor
+
+
+def _check_recipe_addition(
+    references: list[dict[str, Any]], recipe_ids: list[str], *, allow_existing: bool
+) -> None:
+    if len(set(recipe_ids)) != len(recipe_ids):
+        raise ValueError("The selection contains a duplicate recipe ID")
+    existing = {ref.get("recipeId") for ref in references}
+    if not allow_existing and any(recipe_id in existing for recipe_id in recipe_ids):
+        raise ValueError("A recipe is already linked to this list; confirm before adding it again")
 
 
 def _section_title(line: str) -> str | None:
@@ -126,11 +160,124 @@ def _section_title(line: str) -> str | None:
     return None
 
 
-def _ingredient_from_line(line: str) -> dict[str, Any]:
-    title = _section_title(line)
-    if title is not None:
-        return {"title": title, "note": "", "disableAmount": True}
-    return {"note": line}
+class RecipeIngredientInput(BaseModel):
+    """A Mealie ingredient whose amount can be scaled with recipe servings."""
+
+    quantity: float | None = Field(default=None, ge=0)
+    unit: str | None = None
+    food: str | None = None
+    note: str | None = None
+    title: str | None = None
+    create_missing: bool = False
+    confirmed_similar_ids: dict[str, list[str]] = Field(default_factory=dict)
+
+
+_RANGE = re.compile(r"\b\d+(?:[.,]\d+)?\s*(?:[-–]|bis)\s*\d+(?:[.,]\d+)?\b", re.IGNORECASE)
+_EXPLICIT_UNIT = re.compile(
+    r"^\s*(?:ca\.?\s*)?\d+(?:[.,]\d+)?\s*(?:kg|g|ml|l|el|tl)\b", re.IGNORECASE
+)
+_SERVING_LABEL = re.compile(
+    r"\s*(\d+(?:[.,]\d+)?)\s*(?:portion(?:en|s)?|person(?:en|s)?|servings?)\s*",
+    re.IGNORECASE,
+)
+
+
+async def _prepare_ingredients(
+    client: MealieClient, ingredients: list[str | RecipeIngredientInput]
+) -> list[dict[str, Any]]:
+    """Preserve sections, parse text in one call, and accept exact structured amounts."""
+    result: list[dict[str, Any] | None] = []
+    create_missing_flags: list[bool] = []
+    confirmed_similar_ids: list[dict[str, list[str]]] = []
+    lines: list[str] = []
+    positions: list[int] = []
+    for item in ingredients:
+        if isinstance(item, RecipeIngredientInput):
+            create_missing_flags.append(item.create_missing)
+            confirmed_similar_ids.append(item.confirmed_similar_ids)
+            if item.title:
+                if item.quantity or item.food or item.unit:
+                    raise ValueError("A section title cannot also be an ingredient")
+                result.append({"title": item.title, "note": ""})
+            else:
+                if item.quantity and not item.food:
+                    raise ValueError("A quantified ingredient needs a food name")
+                result.append(
+                    {
+                        "quantity": item.quantity or 0,
+                        "unit": item.unit,
+                        "food": item.food,
+                        "note": item.note or "",
+                    }
+                )
+            continue
+
+        title = _section_title(item)
+        create_missing_flags.append(False)
+        confirmed_similar_ids.append({})
+        if title is not None:
+            result.append({"title": title, "note": ""})
+            continue
+        if _RANGE.search(item):
+            raise ValueError(
+                f"Ingredient '{item}' has a range. Choose an exact amount and pass "
+                "{quantity, unit, food, note} for reliable serving scaling."
+            )
+        positions.append(len(result))
+        lines.append(item)
+        result.append(None)
+
+    if lines:
+        parsed = await client.parse_ingredients(lines)
+        if not isinstance(parsed, list) or len(parsed) != len(lines):
+            raise ValueError("Mealie's ingredient parser returned an unexpected result")
+        for position, line, row in zip(positions, lines, parsed, strict=True):
+            ingredient = row.get("ingredient") if isinstance(row, dict) else None
+            if not isinstance(ingredient, dict):
+                raise ValueError(f"Mealie could not parse ingredient '{line}'")
+            if re.search(r"\d", line) and (
+                not ingredient.get("quantity") or not ingredient.get("food")
+            ):
+                raise ValueError(
+                    f"Mealie could not resolve amount and food for '{line}'. "
+                    "Pass it as {quantity, unit, food, note}, or add the food/unit to Mealie."
+                )
+            if _EXPLICIT_UNIT.search(line) and not ingredient.get("unit"):
+                raise ValueError(
+                    f"Mealie could not resolve the unit for '{line}'. "
+                    "Pass it as {quantity, unit, food, note}, or add the unit to Mealie."
+                )
+            # Let Mealie render the scaled value from quantity/unit/food.
+            ingredient.pop("display", None)
+            result[position] = ingredient
+
+    prepared = [item for item in result if item is not None]
+    resolved: dict[tuple[str, str], dict[str, Any]] = {}
+    for item, create_missing, confirmed_ids in zip(
+        prepared, create_missing_flags, confirmed_similar_ids, strict=True
+    ):
+        for key, kind in (("unit", "units"), ("food", "foods")):
+            entity = item.get(key)
+            if not entity:
+                continue
+            if isinstance(entity, str):
+                entity = {"name": entity}
+            if entity.get("id"):
+                item[key] = entity
+                continue
+            name = entity.get("name")
+            if not name:
+                raise ValueError(f"Ingredient {key} requires a name or id")
+            cache_key = (kind, name.casefold())
+            if cache_key not in resolved:
+                resolved[cache_key] = await client.resolve_ingredient_entity(
+                    kind,
+                    name,
+                    create_missing=create_missing,
+                    confirmed_similar_ids=confirmed_ids.get(kind, []),
+                )
+            item[key] = resolved[cache_key]
+    return prepared
 
 
 def _instruction_from_line(line: str) -> dict[str, Any]:
@@ -149,7 +296,11 @@ def _build_recipe_patch(
     prep_time: str | None = None,
     cook_time: str | None = None,
     total_time: str | None = None,
-    ingredients: list[str] | None = None,
+    perform_time: str | None = None,
+    org_url: str | None = None,
+    recipe_yield_quantity: float | None = None,
+    nutrition: dict[str, str] | None = None,
+    ingredients: list[dict[str, Any]] | None = None,
     instructions: list[str] | None = None,
     notes: list[str] | None = None,
     tag_objects: list[dict[str, Any]] | None = None,
@@ -162,7 +313,15 @@ def _build_recipe_patch(
     if description is not None:
         patch["description"] = description
     if recipe_yield is not None:
-        patch["recipeYield"] = recipe_yield
+        # A fixed "3 portions" label becomes misleading when the user scales
+        # recipeServings to four. Mealie's numeric field is the source of truth.
+        serving_label = _SERVING_LABEL.fullmatch(recipe_yield)
+        if serving_label:
+            if recipe_servings is None:
+                recipe_servings = float(serving_label.group(1).replace(",", "."))
+            patch["recipeYield"] = ""
+        else:
+            patch["recipeYield"] = recipe_yield
     if recipe_servings is not None:
         patch["recipeServings"] = recipe_servings
     if prep_time is not None:
@@ -171,8 +330,31 @@ def _build_recipe_patch(
         patch["cookTime"] = cook_time
     if total_time is not None:
         patch["totalTime"] = total_time
+    if perform_time is not None:
+        patch["performTime"] = perform_time
+    if org_url is not None:
+        patch["orgURL"] = org_url
+    if recipe_yield_quantity is not None:
+        patch["recipeYieldQuantity"] = recipe_yield_quantity
+    if nutrition is not None:
+        allowed = {
+            "calories",
+            "carbohydrateContent",
+            "cholesterolContent",
+            "fatContent",
+            "fiberContent",
+            "proteinContent",
+            "saturatedFatContent",
+            "sodiumContent",
+            "sugarContent",
+            "transFatContent",
+            "unsaturatedFatContent",
+        }
+        if unknown := set(nutrition) - allowed:
+            raise ValueError(f"Unsupported nutrition fields: {', '.join(sorted(unknown))}")
+        patch["nutrition"] = nutrition
     if ingredients is not None:
-        patch["recipeIngredient"] = [_ingredient_from_line(line) for line in ingredients]
+        patch["recipeIngredient"] = ingredients
     if instructions is not None:
         patch["recipeInstructions"] = [_instruction_from_line(line) for line in instructions]
     if notes is not None:
@@ -357,22 +539,45 @@ def build_server() -> FastMCP:
         ctx: Context,
         query: str | None = None,
         tags: list[str] | None = None,
+        categories: list[str] | None = None,
+        foods: list[str] | None = None,
+        cookbook: str | None = None,
         limit: int = 25,
-    ) -> list[dict[str, Any]]:
+        page: int = 1,
+        per_page: int | None = None,
+    ) -> dict[str, Any]:
         """Search recipes in Mealie.
 
         Args:
             query: Free-text search across recipe names and descriptions.
-            tags: Optional list of tag slugs to filter by.
-            limit: Maximum number of recipes to return (default 25, max 100).
+            tags: Tag names, slugs or IDs to filter by.
+            categories: Category names, slugs or IDs.
+            foods: Food names or IDs.
+            cookbook: Cookbook slug or ID.
+            limit: Page size for existing callers (default 25).
+            page: One-based page number.
+            per_page: Page size, overrides limit when supplied.
         """
-        per_page = max(1, min(limit, 100))
+        if page < 1 or (per_page if per_page is not None else limit) < 1:
+            raise ValueError("page and page size must be positive")
         try:
-            payload = await _client(ctx).search_recipes(query=query, tags=tags, per_page=per_page)
+            payload = await _client(ctx).search_recipes(
+                query=query,
+                tags=tags,
+                categories=categories,
+                foods=foods,
+                cookbook=cookbook,
+                page=page,
+                per_page=per_page if per_page is not None else limit,
+            )
         except MealieError as exc:
             raise RuntimeError(str(exc)) from exc
-        items = payload.get("items") if isinstance(payload, dict) else payload
-        return [_summarize_recipe(r) for r in (items or [])]
+        if not isinstance(payload, dict):
+            raise RuntimeError("Unexpected recipe search response")
+        return {
+            **payload,
+            "items": [_summarize_recipe(r) for r in payload.get("items", [])],
+        }
 
     @mcp.tool()
     async def get_recipe(ctx: Context, slug: str) -> dict[str, Any]:
@@ -383,19 +588,53 @@ def build_server() -> FastMCP:
             raise RuntimeError(str(exc)) from exc
 
     @mcp.tool()
-    async def list_meal_plan(ctx: Context, start_date: str, end_date: str) -> list[dict[str, Any]]:
+    async def set_recipe_last_made(
+        ctx: Context, slug: str, cooked_at: str, confirmed: bool
+    ) -> dict[str, Any]:
+        """Set lastMade only after the user confirms the recipe was cooked.
+
+        A planned meal is not proof of cooking. Provide an ISO timestamp with
+        timezone, e.g. 2026-09-29T18:00:00+02:00.
+        """
+        if not confirmed:
+            raise ValueError("Explicit cooking confirmation is required")
+        try:
+            parsed = datetime.fromisoformat(cooked_at)
+        except ValueError as exc:
+            raise ValueError("Provide an ISO timestamp with timezone") from exc
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            raise ValueError("Provide an ISO timestamp with timezone")
+        try:
+            return await _client(ctx).set_recipe_last_made(slug, cooked_at)
+        except MealieError as exc:
+            raise RuntimeError(str(exc)) from exc
+
+    @mcp.tool()
+    async def list_meal_plan(
+        ctx: Context, start_date: str, end_date: str, page: int = 1, per_page: int = 50
+    ) -> dict[str, Any]:
         """List meal plan entries between two dates (inclusive).
+
+        For "this week" and "next week", choose Monday through Sunday in
+        Europe/Berlin before calling this date-range API.
 
         Args:
             start_date: ISO date string, e.g. "2026-04-24".
             end_date: ISO date string, e.g. "2026-05-01".
+            page: One-based page number; request later pages until totalPages.
+            per_page: Number of entries per page.
         """
+        if page < 1 or per_page < 1:
+            raise ValueError("page and per_page must be positive")
         try:
-            payload = await _client(ctx).list_meal_plan(start_date, end_date)
+            payload = await _client(ctx).list_meal_plan(
+                start_date, end_date, page=page, per_page=per_page
+            )
         except MealieError as exc:
             raise RuntimeError(str(exc)) from exc
-        items = payload.get("items") if isinstance(payload, dict) else payload
-        return items or []
+        if not isinstance(payload, dict):
+            raise RuntimeError("Unexpected meal plan response")
+        return payload
 
     @mcp.tool()
     async def list_shopping_lists(ctx: Context) -> list[dict[str, Any]]:
@@ -410,6 +649,87 @@ def build_server() -> FastMCP:
             for item in (items or [])
             if isinstance(item, dict)
         ]
+
+    @mcp.tool()
+    async def list_shopping_recipe_references(ctx: Context, list_id: str) -> list[dict[str, Any]]:
+        """Show linked recipes and their current quantity factors for a shopping list."""
+        try:
+            return await _client(ctx).list_shopping_recipe_references(list_id)
+        except MealieError as exc:
+            raise RuntimeError(str(exc)) from exc
+
+    @mcp.tool()
+    async def add_recipe_to_shopping_list(
+        ctx: Context,
+        list_id: str,
+        recipe_id: str,
+        factor: float = 1,
+        allow_existing: bool = False,
+    ) -> dict[str, Any]:
+        """Add one recipe with Mealie's native endpoint.
+
+        Pass Mealies recipeIncrementQuantity as a positive factor. Confirm its
+        meaning on the running Mealie version before deriving it from servings.
+        Confirm before adding a linked recipe again.
+        """
+        factor = _positive_factor(factor)
+        client = _client(ctx)
+        try:
+            references = await client.list_shopping_recipe_references(list_id)
+            _check_recipe_addition(references, [recipe_id], allow_existing=allow_existing)
+            return await client.add_recipe_to_shopping_list(list_id, recipe_id, factor=factor)
+        except MealieError as exc:
+            raise RuntimeError(str(exc)) from exc
+
+    @mcp.tool()
+    async def add_recipes_to_shopping_list(
+        ctx: Context,
+        list_id: str,
+        recipes: list[ShoppingRecipeInput],
+        allow_existing: bool = False,
+    ) -> dict[str, Any]:
+        """Add recipe ingredients through Mealie's native bulk operation.
+
+        Each factor is sent as Mealies recipeIncrementQuantity. Verify its
+        meaning on the running Mealie version before converting serving counts.
+        Set allow_existing only
+        after the user confirms adding a linked recipe again.
+        """
+        if not recipes:
+            raise ValueError("Choose at least one recipe")
+        client = _client(ctx)
+        try:
+            references = await client.list_shopping_recipe_references(list_id)
+            _check_recipe_addition(
+                references, [recipe.recipe_id for recipe in recipes], allow_existing=allow_existing
+            )
+            return await client.add_recipes_to_shopping_list(
+                list_id,
+                [
+                    {
+                        "recipeId": recipe.recipe_id,
+                        "recipeIncrementQuantity": _positive_factor(recipe.factor),
+                    }
+                    for recipe in recipes
+                ],
+            )
+        except MealieError as exc:
+            raise RuntimeError(str(exc)) from exc
+
+    @mcp.tool(annotations=ToolAnnotations(destructive=True))
+    async def remove_recipe_from_shopping_list(
+        ctx: Context, list_id: str, recipe_id: str, factor: float = 1
+    ) -> dict[str, Any]:
+        """Remove a recipe quantity contribution through Mealie; other items remain.
+
+        Use the existing recipeQuantity reference to choose the decrement factor.
+        """
+        try:
+            return await _client(ctx).remove_recipe_from_shopping_list(
+                list_id, recipe_id, factor=_positive_factor(factor)
+            )
+        except MealieError as exc:
+            raise RuntimeError(str(exc)) from exc
 
     @mcp.tool()
     async def add_shopping_list_items(
@@ -447,7 +767,11 @@ def build_server() -> FastMCP:
         prep_time: str | None = None,
         cook_time: str | None = None,
         total_time: str | None = None,
-        ingredients: list[str] | None = None,
+        perform_time: str | None = None,
+        org_url: str | None = None,
+        recipe_yield_quantity: float | None = None,
+        nutrition: dict[str, str] | None = None,
+        ingredients: list[str | RecipeIngredientInput] | None = None,
         instructions: list[str] | None = None,
         notes: list[str] | None = None,
         tags: list[str] | None = None,
@@ -460,19 +784,25 @@ def build_server() -> FastMCP:
         tool does both: it POSTs the shell, then PUTs the full body so the
         recipe is saved with all content.
 
-        Ingredient and instruction lines that start with "# ", "## ", or "### "
-        become section headers (e.g. "### Filling"). All other lines are plain
-        ingredient text / instruction steps. ``notes`` are free-text notes.
+        Ingredient strings are parsed by Mealie into quantity, unit and food.
+        Prefer objects like {"quantity": 400, "unit": "g", "food": "Nudeln"}
+        for exact, scalable amounts. "### Filling" creates a section.
 
         Args:
             name: Recipe name.
             description: Short summary shown above the recipe.
-            recipe_yield: Free-text yield, e.g. "8 servings" or "1 loaf".
+            recipe_yield: Free-text product yield such as "1 loaf". Use
+                recipe_servings alone for a number of people.
             recipe_servings: Numeric serving count, e.g. 4.
             prep_time: Free-text prep time, e.g. "15 min".
             cook_time: Free-text cook time, e.g. "30 min".
             total_time: Free-text total time.
-            ingredients: Ingredient lines; "### Base" style lines become sections.
+            perform_time: Additional active time as accepted by Mealie.
+            org_url: Source URL of the recipe.
+            recipe_yield_quantity: Numeric yield for non-serving outputs.
+            nutrition: Explicit Mealie nutrition strings; these stay static when servings change.
+            ingredients: Structured ingredients or text for Mealie to parse; use exact
+                quantities for scaling. "### Base" creates a section.
             instructions: Ordered steps; "### Base" style lines become sections.
             notes: Free-text recipe notes (one entry per note).
             tags: Tag names to apply. Tags are created in Mealie if they don't exist.
@@ -480,11 +810,11 @@ def build_server() -> FastMCP:
             tools: Tool/equipment names to apply. Tools are created if they don't exist.
         """
         client = _client(ctx)
-        try:
-            slug = await client.create_recipe(name)
-        except MealieError as exc:
-            raise RuntimeError(str(exc)) from exc
-
+        # Validate and parse before creating the recipe shell. A failed parser
+        # must not leave an empty recipe behind.
+        prepared_ingredients = (
+            await _prepare_ingredients(client, ingredients) if ingredients is not None else None
+        )
         tag_objects: list[dict[str, Any]] | None = None
         if tags is not None:
             try:
@@ -513,13 +843,21 @@ def build_server() -> FastMCP:
             prep_time=prep_time,
             cook_time=cook_time,
             total_time=total_time,
-            ingredients=ingredients,
+            perform_time=perform_time,
+            org_url=org_url,
+            recipe_yield_quantity=recipe_yield_quantity,
+            nutrition=nutrition,
+            ingredients=prepared_ingredients,
             instructions=instructions,
             notes=notes,
             tag_objects=tag_objects,
             category_objects=category_objects,
             tool_objects=tool_objects,
         )
+        try:
+            slug = await client.create_recipe(name)
+        except MealieError as exc:
+            raise RuntimeError(str(exc)) from exc
         if not patch:
             return {"slug": slug, "name": name}
 
@@ -544,7 +882,11 @@ def build_server() -> FastMCP:
         prep_time: str | None = None,
         cook_time: str | None = None,
         total_time: str | None = None,
-        ingredients: list[str] | None = None,
+        perform_time: str | None = None,
+        org_url: str | None = None,
+        recipe_yield_quantity: float | None = None,
+        nutrition: dict[str, str] | None = None,
+        ingredients: list[str | RecipeIngredientInput] | None = None,
         instructions: list[str] | None = None,
         notes: list[str] | None = None,
         tags: list[str] | None = None,
@@ -553,20 +895,25 @@ def build_server() -> FastMCP:
     ) -> dict[str, Any]:
         """Update fields on an existing recipe. Only provided fields are changed.
 
-        Section-header rules for ``ingredients`` and ``instructions`` match
-        ``create_recipe``: lines starting with "# ", "## ", or "### " become
-        section headers.
+        Ingredient strings are parsed by Mealie; structured objects allow exact
+        quantities, units and foods. Sections start with "### ".
 
         Args:
             slug: Recipe slug returned by ``create_recipe`` or ``search_recipes``.
             name: New recipe name.
             description: Recipe description / summary.
-            recipe_yield: Free-text yield, e.g. "8 servings" or "1 loaf".
+            recipe_yield: Free-text product yield such as "1 loaf". Use
+                recipe_servings alone for a number of people.
             recipe_servings: Numeric serving count, e.g. 4.
             prep_time: Free-text prep time, e.g. "15 min".
             cook_time: Free-text cook time, e.g. "30 min".
             total_time: Free-text total time.
-            ingredients: Ingredient lines; "### Base" style lines become sections.
+            perform_time: Additional active time as accepted by Mealie.
+            org_url: Source URL of the recipe.
+            recipe_yield_quantity: Numeric yield for non-serving outputs.
+            nutrition: Explicit Mealie nutrition strings; omitted fields retain their values.
+            ingredients: Structured ingredients or text for Mealie to parse. This
+                replaces the ingredient list; "### Base" creates a section.
             instructions: Ordered steps; "### Base" style lines become sections.
             notes: Free-text recipe notes (one entry per note).
             tags: Tag names to apply (replaces existing tags). Tags are created if they don't exist.
@@ -576,6 +923,9 @@ def build_server() -> FastMCP:
                 don't exist.
         """
         client = _client(ctx)
+        prepared_ingredients = (
+            await _prepare_ingredients(client, ingredients) if ingredients is not None else None
+        )
 
         tag_objects: list[dict[str, Any]] | None = None
         if tags is not None:
@@ -606,7 +956,11 @@ def build_server() -> FastMCP:
             prep_time=prep_time,
             cook_time=cook_time,
             total_time=total_time,
-            ingredients=ingredients,
+            perform_time=perform_time,
+            org_url=org_url,
+            recipe_yield_quantity=recipe_yield_quantity,
+            nutrition=nutrition,
+            ingredients=prepared_ingredients,
             instructions=instructions,
             notes=notes,
             tag_objects=tag_objects,
@@ -635,6 +989,47 @@ def build_server() -> FastMCP:
             for t in (items or [])
             if isinstance(t, dict)
         ]
+
+    @mcp.tool()
+    async def get_tag(ctx: Context, tag_id: str) -> dict[str, Any]:
+        """Read a tag by ID before renaming or deleting it."""
+        try:
+            return await _client(ctx).get_tag(tag_id)
+        except MealieError as exc:
+            raise RuntimeError(str(exc)) from exc
+
+    @mcp.tool()
+    async def create_tag(ctx: Context, name: str) -> dict[str, Any]:
+        """Create an explicit Mealie tag."""
+        if not name.strip():
+            raise ValueError("Tag name must not be empty")
+        try:
+            return await _client(ctx).create_tag(name)
+        except MealieError as exc:
+            raise RuntimeError(str(exc)) from exc
+
+    @mcp.tool()
+    async def rename_tag(ctx: Context, tag_id: str, name: str) -> dict[str, Any]:
+        """Rename an existing Mealie tag."""
+        if not name.strip():
+            raise ValueError("Tag name must not be empty")
+        try:
+            return await _client(ctx).update_tag(tag_id, name)
+        except MealieError as exc:
+            raise RuntimeError(str(exc)) from exc
+
+    @mcp.tool(annotations=ToolAnnotations(destructive=True))
+    async def delete_tag(ctx: Context, tag_id: str, expected_name: str) -> dict[str, Any]:
+        """Delete a tag after checking the inspected name."""
+        client = _client(ctx)
+        try:
+            tag = await client.get_tag(tag_id)
+            if tag.get("name") != expected_name:
+                raise ValueError("Tag name changed; inspect it again before deletion")
+            await client.delete_tag(tag_id)
+        except MealieError as exc:
+            raise RuntimeError(str(exc)) from exc
+        return {"id": tag_id, "status": "deleted"}
 
     @mcp.tool()
     async def set_recipe_tags(
@@ -713,6 +1108,15 @@ def build_server() -> FastMCP:
             raise RuntimeError(str(exc)) from exc
         return {"slug": slug, "status": "image updated"}
 
+    @mcp.tool(annotations=ToolAnnotations(destructive=True))
+    async def delete_recipe_image(ctx: Context, slug: str) -> dict[str, Any]:
+        """Remove a recipe image through Mealie's DELETE route."""
+        try:
+            await _client(ctx).delete_recipe_image(slug)
+        except MealieError as exc:
+            raise RuntimeError(str(exc)) from exc
+        return {"slug": slug, "status": "image deleted"}
+
     @mcp.tool()
     async def create_meal_plan_entry(
         ctx: Context,
@@ -720,20 +1124,22 @@ def build_server() -> FastMCP:
         entry_type: EntryType,
         recipe_slug: str | None = None,
         title: str | None = None,
+        text: str | None = None,
     ) -> dict[str, Any]:
         """Add an entry to the meal plan.
 
-        Either ``recipe_slug`` or ``title`` should be provided. ``recipe_slug``
+        Either ``recipe_slug``, ``title`` or ``text`` should be provided. ``recipe_slug``
         links to an existing recipe; ``title`` creates a free-text entry.
 
         Args:
             date: ISO date string for the meal, e.g. "2026-04-24".
-            entry_type: One of "breakfast", "lunch", "dinner", "side".
+            entry_type: Breakfast, lunch, dinner, side, snack, drink or dessert.
             recipe_slug: Optional slug of an existing recipe to schedule.
             title: Optional free-text title (used when no recipe is linked).
+            text: Optional description for the meal-plan entry.
         """
-        if not recipe_slug and not title:
-            raise ValueError("Provide either recipe_slug or title")
+        if not recipe_slug and not title and not text:
+            raise ValueError("Provide recipe_slug, title or text")
 
         client = _client(ctx)
         recipe_id: str | None = None
@@ -752,7 +1158,54 @@ def build_server() -> FastMCP:
                 entry_type=entry_type,
                 recipe_id=recipe_id,
                 title=title,
+                text=text,
             )
+        except MealieError as exc:
+            raise RuntimeError(str(exc)) from exc
+
+    @mcp.tool()
+    async def get_meal_plan_entry(ctx: Context, entry_id: int) -> dict[str, Any]:
+        """Read one meal-plan entry by its numeric ID."""
+        try:
+            return await _client(ctx).get_meal_plan_entry(entry_id)
+        except MealieError as exc:
+            raise RuntimeError(str(exc)) from exc
+
+    @mcp.tool()
+    async def update_meal_plan_entry(
+        ctx: Context,
+        entry_id: int,
+        date: str | None = None,
+        entry_type: EntryType | None = None,
+        recipe_slug: str | None = None,
+        clear_recipe: bool = False,
+        title: str | None = None,
+        text: str | None = None,
+    ) -> dict[str, Any]:
+        """Edit a meal-plan entry in place; clear_recipe removes an existing recipe link."""
+        if recipe_slug and clear_recipe:
+            raise ValueError("Choose recipe_slug or clear_recipe")
+        patch: dict[str, Any] = {}
+        for key, value in (
+            ("date", date),
+            ("entryType", entry_type),
+            ("title", title),
+            ("text", text),
+        ):
+            if value is not None:
+                patch[key] = value
+        client = _client(ctx)
+        try:
+            if recipe_slug:
+                recipe = await client.get_recipe(recipe_slug)
+                if not isinstance(recipe, dict) or not recipe.get("id"):
+                    raise ValueError(f"Recipe '{recipe_slug}' has no id")
+                patch["recipeId"] = recipe["id"]
+            elif clear_recipe:
+                patch["recipeId"] = None
+            if not patch:
+                raise ValueError("Provide at least one field to update")
+            return await client.update_meal_plan_entry(entry_id, patch)
         except MealieError as exc:
             raise RuntimeError(str(exc)) from exc
 
@@ -767,6 +1220,25 @@ def build_server() -> FastMCP:
             return await _client(ctx).import_recipe_from_url(url)
         except MealieError as exc:
             raise RuntimeError(str(exc)) from exc
+
+    @mcp.tool()
+    async def import_recipe_from_html_or_json(
+        ctx: Context, data: str, include_tags: bool = False, include_categories: bool = False
+    ) -> dict[str, Any]:
+        """Import pasted recipe HTML/JSON through Mealie and inspect its ingredients.
+
+        The returned recipe includes the numeric servings and all ingredient rows;
+        unstructuredIngredients points to rows needing manual correction for scaling.
+        """
+        if not data.strip():
+            raise ValueError("Recipe data must not be empty")
+        try:
+            recipe = await _client(ctx).import_recipe_from_html_or_json(
+                data, include_tags=include_tags, include_categories=include_categories
+            )
+        except MealieError as exc:
+            raise RuntimeError(str(exc)) from exc
+        return {"recipe": recipe, "unstructuredIngredients": _unstructured_ingredients(recipe)}
 
     @mcp.tool(annotations=ToolAnnotations(destructive=True))
     async def delete_recipe(ctx: Context, slug: str) -> dict[str, Any]:
@@ -852,6 +1324,39 @@ def build_server() -> FastMCP:
             raise RuntimeError(str(exc)) from exc
 
     @mcp.tool()
+    async def get_shopping_list(ctx: Context, list_id: str) -> dict[str, Any]:
+        """Inspect a list, including its items, before editing or deleting it."""
+        try:
+            return await _client(ctx).get_shopping_list(list_id)
+        except MealieError as exc:
+            raise RuntimeError(str(exc)) from exc
+
+    @mcp.tool()
+    async def rename_shopping_list(ctx: Context, list_id: str, name: str) -> dict[str, Any]:
+        """Rename a list while preserving its items and settings."""
+        if not name.strip():
+            raise ValueError("List name must not be empty")
+        try:
+            return await _client(ctx).rename_shopping_list(list_id, name)
+        except MealieError as exc:
+            raise RuntimeError(str(exc)) from exc
+
+    @mcp.tool(annotations=ToolAnnotations(destructive=True))
+    async def delete_shopping_list(
+        ctx: Context, list_id: str, expected_name: str
+    ) -> dict[str, Any]:
+        """Delete an inspected list and all its items after confirming its name."""
+        client = _client(ctx)
+        try:
+            current = await client.get_shopping_list(list_id)
+            if current.get("name") != expected_name:
+                raise ValueError("List name changed; inspect the list again before deletion")
+            await client.delete_shopping_list(list_id)
+        except MealieError as exc:
+            raise RuntimeError(str(exc)) from exc
+        return {"id": list_id, "name": expected_name, "status": "deleted"}
+
+    @mcp.tool()
     async def list_shopping_list_items(ctx: Context, list_id: str) -> list[dict[str, Any]]:
         """Return all items in a shopping list.
 
@@ -864,6 +1369,68 @@ def build_server() -> FastMCP:
             raise RuntimeError(str(exc)) from exc
         items = payload.get("items") if isinstance(payload, dict) else payload
         return items or []
+
+    @mcp.tool()
+    async def get_shopping_list_item(ctx: Context, item_id: str) -> dict[str, Any]:
+        """Inspect a shopping item and its links before editing or deleting it."""
+        try:
+            return await _client(ctx).get_shopping_list_item(item_id)
+        except MealieError as exc:
+            raise RuntimeError(str(exc)) from exc
+
+    @mcp.tool()
+    async def add_structured_shopping_item(
+        ctx: Context,
+        list_id: str,
+        quantity: float,
+        food_id: str,
+        unit_id: str | None = None,
+        note: str = "",
+    ) -> dict[str, Any]:
+        """Add a measured item using existing Mealie food and unit IDs."""
+        if quantity <= 0:
+            raise ValueError("Quantity must be positive")
+        try:
+            return await _client(ctx).add_shopping_list_item(
+                list_id=list_id,
+                note=note,
+                quantity=quantity,
+                food_id=food_id,
+                unit_id=unit_id,
+            )
+        except MealieError as exc:
+            raise RuntimeError(str(exc)) from exc
+
+    @mcp.tool()
+    async def update_shopping_list_item(
+        ctx: Context,
+        item_id: str,
+        quantity: float | None = None,
+        food_id: str | None = None,
+        unit_id: str | None = None,
+        note: str | None = None,
+        checked: bool | None = None,
+    ) -> dict[str, Any]:
+        """Change supplied item fields in place; other fields remain as in Mealie."""
+        if quantity is not None and quantity <= 0:
+            raise ValueError("Quantity must be positive")
+        patch = {
+            key: value
+            for key, value in (
+                ("quantity", quantity),
+                ("foodId", food_id),
+                ("unitId", unit_id),
+                ("note", note),
+                ("checked", checked),
+            )
+            if value is not None
+        }
+        if not patch:
+            raise ValueError("Provide a field to update")
+        try:
+            return await _client(ctx).update_shopping_list_item(item_id, patch)
+        except MealieError as exc:
+            raise RuntimeError(str(exc)) from exc
 
     @mcp.tool()
     async def check_off_shopping_item(
@@ -881,14 +1448,25 @@ def build_server() -> FastMCP:
             raise RuntimeError(str(exc)) from exc
 
     @mcp.tool(annotations=ToolAnnotations(destructive=True))
-    async def delete_shopping_list_item(ctx: Context, item_id: str) -> dict[str, Any]:
-        """Permanently delete an item from a shopping list.
+    async def delete_shopping_list_item(
+        ctx: Context, item_id: str, expected_list_id: str, expected_note: str
+    ) -> dict[str, Any]:
+        """Delete an inspected item after confirming its list and note.
 
         Args:
             item_id: The shopping list item ID to delete.
+            expected_list_id: List ID seen when inspecting the item.
+            expected_note: Note seen when inspecting the item (empty if none).
         """
+        client = _client(ctx)
         try:
-            await _client(ctx).delete_shopping_list_item(item_id)
+            item = await client.get_shopping_list_item(item_id)
+            if (
+                item.get("shoppingListId") != expected_list_id
+                or (item.get("note") or "") != expected_note
+            ):
+                raise ValueError("Shopping item changed; inspect it again before deletion")
+            await client.delete_shopping_list_item(item_id)
         except MealieError as exc:
             raise RuntimeError(str(exc)) from exc
         return {"id": item_id, "status": "deleted"}
@@ -910,6 +1488,31 @@ def build_server() -> FastMCP:
             raise RuntimeError(str(exc)) from exc
         items = payload.get("items") if isinstance(payload, dict) else payload
         return items or []
+
+    @mcp.tool()
+    async def list_units(
+        ctx: Context, query: str | None = None, limit: int = 50
+    ) -> list[dict[str, Any]]:
+        """List Mealie measurement units, optionally filtered by name or abbreviation."""
+        try:
+            payload = await _client(ctx).list_units(query=query, per_page=max(1, min(limit, 1000)))
+        except MealieError as exc:
+            raise RuntimeError(str(exc)) from exc
+        return payload.get("items", []) if isinstance(payload, dict) else payload or []
+
+    @mcp.tool()
+    async def parse_ingredients(
+        ctx: Context, ingredients: list[str], parser: Literal["nlp", "brute", "openai"] = "nlp"
+    ) -> list[dict[str, Any]]:
+        """Preview Mealie's parsed quantities, units and foods without saving a recipe.
+
+        Use this to inspect text before creating a recipe. For ambiguous ranges,
+        choose an exact quantity and pass a structured ingredient instead.
+        """
+        try:
+            return await _client(ctx).parse_ingredients(ingredients, parser=parser)
+        except MealieError as exc:
+            raise RuntimeError(str(exc)) from exc
 
     @mcp.tool()
     async def list_recipe_tools(ctx: Context) -> list[dict[str, Any]]:
@@ -967,6 +1570,7 @@ def build_server() -> FastMCP:
         name: str,
         description: str = "",
         public: bool = False,
+        query_filter_string: str = "",
     ) -> dict[str, Any]:
         """Create a new cookbook.
 
@@ -974,11 +1578,67 @@ def build_server() -> FastMCP:
             name: Display name for the cookbook.
             description: Optional description.
             public: Whether the cookbook is publicly visible.
+            query_filter_string: Native Mealie recipe query filter.
         """
         try:
-            return await _client(ctx).create_cookbook(name, description=description, public=public)
+            return await _client(ctx).create_cookbook(
+                name,
+                description=description,
+                public=public,
+                query_filter_string=query_filter_string,
+            )
         except MealieError as exc:
             raise RuntimeError(str(exc)) from exc
+
+    @mcp.tool()
+    async def get_cookbook(ctx: Context, cookbook_id: str) -> dict[str, Any]:
+        """Read a cookbook and its native query filter."""
+        try:
+            return await _client(ctx).get_cookbook(cookbook_id)
+        except MealieError as exc:
+            raise RuntimeError(str(exc)) from exc
+
+    @mcp.tool()
+    async def update_cookbook(
+        ctx: Context,
+        cookbook_id: str,
+        name: str | None = None,
+        description: str | None = None,
+        public: bool | None = None,
+        query_filter_string: str | None = None,
+    ) -> dict[str, Any]:
+        """Edit specified cookbook fields, preserving the other Mealie fields."""
+        patch = {
+            key: value
+            for key, value in (
+                ("name", name),
+                ("description", description),
+                ("public", public),
+                ("queryFilterString", query_filter_string),
+            )
+            if value is not None
+        }
+        if not patch:
+            raise ValueError("Provide a cookbook field to update")
+        if name is not None and not name.strip():
+            raise ValueError("Cookbook name must not be empty")
+        try:
+            return await _client(ctx).update_cookbook(cookbook_id, patch)
+        except MealieError as exc:
+            raise RuntimeError(str(exc)) from exc
+
+    @mcp.tool(annotations=ToolAnnotations(destructive=True))
+    async def delete_cookbook(ctx: Context, cookbook_id: str, expected_name: str) -> dict[str, Any]:
+        """Delete an inspected cookbook after checking its name."""
+        client = _client(ctx)
+        try:
+            cookbook = await client.get_cookbook(cookbook_id)
+            if cookbook.get("name") != expected_name:
+                raise ValueError("Cookbook name changed; inspect it again before deletion")
+            await client.delete_cookbook(cookbook_id)
+        except MealieError as exc:
+            raise RuntimeError(str(exc)) from exc
+        return {"id": cookbook_id, "status": "deleted"}
 
     return mcp
 
