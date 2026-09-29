@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import httpx
@@ -121,6 +122,14 @@ class MealieClient:
         if not isinstance(current, dict):
             raise MealieError(500, "Unexpected response from get_recipe", current)
         merged = {**current, **patch}
+        if "recipeServings" in patch and "recipeYield" not in patch:
+            old_yield = current.get("recipeYield") or ""
+            if re.fullmatch(
+                r"\s*\d+(?:[.,]\d+)?\s*(?:portion(?:en|s)?|person(?:en|s)?|servings?)\s*",
+                old_yield,
+                re.IGNORECASE,
+            ):
+                merged["recipeYield"] = ""
         return await self._request("PUT", f"/api/recipes/{slug}", json=merged)
 
     async def import_recipe_from_url(
@@ -137,6 +146,14 @@ class MealieClient:
 
     async def delete_recipe(self, slug: str) -> None:
         await self._request("DELETE", f"/api/recipes/{slug}")
+
+    async def parse_ingredients(
+        self, ingredients: list[str], *, parser: str = "nlp"
+    ) -> list[dict[str, Any]]:
+        """Parse ingredient text with Mealie's own food and unit catalog."""
+        return await self._request(
+            "POST", "/api/parser/ingredients", json={"parser": parser, "ingredients": ingredients}
+        )
 
     # ---- Meal plans --------------------------------------------------------------
 
@@ -323,6 +340,29 @@ class MealieClient:
         if query:
             params["search"] = query
         return await self._request("GET", "/api/foods", params=params)
+
+    async def list_units(self, *, query: str | None = None, per_page: int = 50) -> dict[str, Any]:
+        return await self._request(
+            "GET", "/api/units", params={"search": query, "perPage": per_page}
+        )
+
+    async def resolve_ingredient_entity(self, kind: str, name: str) -> dict[str, Any]:
+        """Return an existing food/unit, or create it for a structured ingredient."""
+        if kind not in {"foods", "units"}:
+            raise ValueError("Only foods and units can be resolved")
+        listing = await self._request(
+            "GET", f"/api/{kind}", params={"search": name, "perPage": 1000}
+        )
+        items = listing.get("items", []) if isinstance(listing, dict) else listing
+        for item in items or []:
+            names = [item.get("name", ""), item.get("abbreviation", "")]
+            names += [alias.get("name", "") for alias in item.get("aliases") or []]
+            if any(candidate.casefold() == name.casefold() for candidate in names):
+                return item
+        created = await self._request("POST", f"/api/{kind}", json={"name": name})
+        if not isinstance(created, dict) or not created.get("id"):
+            raise MealieError(500, f"Unexpected response creating {kind}: {name}", created)
+        return created
 
     # ---- Cookbooks ---------------------------------------------------------------
 
