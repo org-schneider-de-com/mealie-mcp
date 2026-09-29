@@ -1,5 +1,11 @@
 # Mealie: vollständige Funktionsprüfung für den Familienalltag
 
+> **Bestandsaufnahme, keine Implementierungsliste.** Die später mit dem Nutzer
+> abgestimmte Grenze zwischen Mealie und MCP sowie die PR-Reihenfolge stehen in
+> [MCP-Zuschnitt und Umsetzung](mcp-scope-and-implementation-2026-09-29.md).
+> Insbesondere sind eigene Einkaufs-Synchronisation und Mengenlogik nicht Ziel
+> des MCP-Servers.
+
 Stand: 29. September 2026. Verglichen wurden der bereitgestellte `openapi.json`-Export (`nightly`, 182 Pfade, 266 HTTP-Operationen), der Quellcode der vier genannten Repositories und drei Rezept-ZIP-Exporte. Die fünf Tabellen prüfen **60 einzelne Familienfunktionen**. **Statische Prüfung:** Es gab keine Verbindung zur Mealie-Instanz des Nutzers. Ein vorhandener MCP-Aufruf ist daher kein Nachweis eines erfolgreichen Ende-zu-Ende-Ablaufs. `better-mealie-mcp` generiert Werkzeuge aus einer eingebauten v3.28.0-OpenAPI mit denselben 266 Methoden/Pfad-Kombinationen; Gleichheit aller Schemata und Kompatibilität mit der laufenden Instanz sind offen.
 
 ## Leseschlüssel
@@ -117,14 +123,14 @@ Für Ernährung in der Familie wichtig: `get_recipe` im Fork und Cometto erlaubt
 
 Der Fork schützt seinen MCP-Zugang per PocketID/OAuth, verwendet für Mealie aber ein festes Backend-API-Token. Daher erscheinen alle Aufrufe gegenüber Mealie als **ein** Benutzer. Auch die anderen Implementierungen benutzen eine Server-Identität für Mealie. Mitgliederrechte, persönliche Favoriten, Bewertungen und Autoreninformationen sind bei einem gemeinsamen Token nicht zuverlässig pro Familienmitglied getrennt. Die rohen Benutzer- und Administrationsendpunkte von Better schaffen diese Zuordnung ebenfalls nicht von allein. Solche Verwaltungswerkzeuge sollten nur nach einem eigenen Identitäts- und Berechtigungskonzept freigegeben werden.
 
-## Prioritäten für den bestehenden Fork
+## Technische Lücken aus der Bestandsaufnahme
 
 1. **P0: Einkaufslistenvertrag korrigieren.** Für eine Liste `GET /lists/{id}` statt ungestütztem `shoppingListId`-Filter verwenden; nach Artikel-POST `createdItems` auswerten. Mit API-geformten Antworten testen und doppelte Einträge bei Wiederholungen vermeiden.
 2. **P0: Skalierung Ende zu Ende prüfen.** Auf einer Wegwerf-Rezeptkopie strukturierte Mengen, `recipeServings`, Anzeige für 3/4 Personen und Übernahme mit `recipeIncrementQuantity` testen. Bestehende Textzutaten nur mit bestätigten Einzelmengen umwandeln.
-3. **P1: Wochenplan in Einkaufsliste überführen.** Zeitraum lesen, einzelne Rezept-IDs und gewünschte Mengen sammeln, doppelte Rezepte konsolidieren, Bulk-Rezept-Endpunkt nutzen, vorhandene manuelle Artikel bewahren und Ergebnis mit dem Nutzer prüfen. Die API speichert keine Portionszahl am Plan-Eintrag: sie muss im Ablauf abgefragt oder als eigene Zusatzinformation geführt werden.
+3. **P1: Mealie-Endpunkte für Plan und Einkauf zugänglich machen.** Zeitraum lesen, Rezept-IDs und gewünschte Mengen abfragen und Mealies Rezept-zu-Liste-Endpunkt verwenden. Der Assistent kombiniert Werkzeuge; der MCP führt keine eigene dauerhafte Synchronisation, Zutatenkonsolidierung oder Mengenrundung aus. Die API speichert keine Portionszahl am Plan-Eintrag; sie wird beim Einkauf abgefragt.
 4. **P1: Einkauf vollständig editierbar machen.** Strukturierte Foods/Units/Mengen, Artikeländerung/Löschen, Liste lesen/umbenennen/löschen, Rezeptbezüge entfernen und Einkaufslisten-Labels.
 5. **P1: Plan vollständig editierbar machen.** Alle sieben `PlanEntryType`-Werte, Freitext, In-place-Update und Pagination; Regeln/Zufall/Suggestions als gezielte Ergänzungen.
-6. **P2: Rezept- und Haushaltspflege.** Nährwerte/Quelle/Zubehör/Anhänge, Kochbuch-CRUD, Favoriten/Bewertungen/Kommentare und Exporte. Einladungen/Rechte erst mit dem gewählten Benutzerkonzept.
+6. **P2: Rezeptpflege und Kochbücher.** Quelle, Zeiten, Bilder, vorhandene Nährwertfelder, Kochbuch- und Tag-Verwaltung. Persönliche Favoriten, Bewertungen, Exporte und Haushaltsadministration sind im vereinbarten ersten Ausbau nicht enthalten. Die gewünschte BLS-Berechnung ist eine begrenzte Ausnahme vom reinen API-Adapter, beschrieben im Zuschnittsdokument.
 
 **Entscheidungshilfe:** Better hat die weiteste API-Oberfläche, liefert aber rohe Operationen und benötigt sorgfältige Authentifizierung, Rechtebegrenzung und Ablaufsteuerung. TS demonstriert Rezept-zu-Einkauf und strukturierte Zutaten, hat aber weder numerische Rezeptportionen noch Listenanlage und weist den belegten Artikel-Antwortfehler auf. Cometto bietet einige Rezeptfelder und Food/Unit-Verwaltung, aber der Datumsfilter ist API-widrig und die Einkaufsliste kaum bearbeitbar. Der bestehende Fork passt zur vorhandenen OAuth-Einbindung; seine konkreten P0-Einkaufsfehler und der fehlende Plan→Einkauf-Ablauf sind vor einer Aussage über Alltagstauglichkeit zu beheben.
 
