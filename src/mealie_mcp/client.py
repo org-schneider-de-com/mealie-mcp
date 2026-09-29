@@ -285,11 +285,10 @@ class MealieClient:
         )
 
     async def list_shopping_list_items(self, list_id: str) -> dict[str, Any]:
-        return await self._request(
-            "GET",
-            "/api/households/shopping/items",
-            params={"shoppingListId": list_id, "perPage": 1000},
-        )
+        result = await self._request("GET", f"/api/households/shopping/lists/{list_id}")
+        if not isinstance(result, dict) or not isinstance(result.get("listItems"), list):
+            raise MealieError(500, "Unexpected shopping list response", result)
+        return {"items": result["listItems"]}
 
     async def add_shopping_list_item(
         self,
@@ -297,8 +296,14 @@ class MealieClient:
         list_id: str,
         note: str,
     ) -> dict[str, Any]:
-        body = {"shoppingListId": list_id, "note": note, "isFood": False, "checked": False}
-        return await self._request("POST", "/api/households/shopping/items", json=body)
+        body = {"shoppingListId": list_id, "note": note, "checked": False}
+        result = await self._request("POST", "/api/households/shopping/items", json=body)
+        if isinstance(result, dict):
+            for key in ("createdItems", "updatedItems"):
+                items = result.get(key)
+                if isinstance(items, list) and items and isinstance(items[0], dict):
+                    return items[0]
+        raise MealieError(500, "Unexpected shopping item response", result)
 
     async def check_off_shopping_item(
         self, item_id: str, *, checked: bool = True
