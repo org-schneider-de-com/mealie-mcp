@@ -284,6 +284,37 @@ class MealieClient:
             params={"perPage": 1000},
         )
 
+    async def list_shopping_recipe_references(self, list_id: str) -> list[dict[str, Any]]:
+        result = await self._request("GET", f"/api/households/shopping/lists/{list_id}")
+        if not isinstance(result, dict) or not isinstance(result.get("recipeReferences"), list):
+            raise MealieError(500, "Unexpected shopping list response", result)
+        return result["recipeReferences"]
+
+    async def add_recipe_to_shopping_list(
+        self, list_id: str, recipe_id: str, *, factor: float = 1
+    ) -> dict[str, Any]:
+        return await self._request(
+            "POST",
+            f"/api/households/shopping/lists/{list_id}/recipe/{recipe_id}",
+            json={"recipeIncrementQuantity": factor},
+        )
+
+    async def add_recipes_to_shopping_list(
+        self, list_id: str, recipes: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        return await self._request(
+            "POST", f"/api/households/shopping/lists/{list_id}/recipe", json=recipes
+        )
+
+    async def remove_recipe_from_shopping_list(
+        self, list_id: str, recipe_id: str, *, factor: float = 1
+    ) -> dict[str, Any]:
+        return await self._request(
+            "POST",
+            f"/api/households/shopping/lists/{list_id}/recipe/{recipe_id}/delete",
+            json={"recipeDecrementQuantity": factor},
+        )
+
     async def list_shopping_list_items(self, list_id: str) -> dict[str, Any]:
         return await self._request(
             "GET",

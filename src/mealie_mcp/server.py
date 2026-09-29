@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -12,6 +13,7 @@ from urllib.parse import urlsplit, urlunsplit
 import uvicorn
 from mcp.server.fastmcp import Context, FastMCP
 from mcp.types import ToolAnnotations
+from pydantic import BaseModel, Field
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
@@ -116,6 +118,27 @@ def _app_context(ctx: Context) -> AppContext:
 
 def _client(ctx: Context) -> MealieClient:
     return _app_context(ctx).client
+
+
+class ShoppingRecipeInput(BaseModel):
+    recipe_id: str
+    factor: float = Field(default=1, gt=0)
+
+
+def _positive_factor(factor: float) -> float:
+    if not math.isfinite(factor) or factor <= 0:
+        raise ValueError("Recipe quantity factor must be positive and finite")
+    return factor
+
+
+def _check_recipe_addition(
+    references: list[dict[str, Any]], recipe_ids: list[str], *, allow_existing: bool
+) -> None:
+    if len(set(recipe_ids)) != len(recipe_ids):
+        raise ValueError("The selection contains a duplicate recipe ID")
+    existing = {ref.get("recipeId") for ref in references}
+    if not allow_existing and any(recipe_id in existing for recipe_id in recipe_ids):
+        raise ValueError("A recipe is already linked to this list; confirm before adding it again")
 
 
 def _section_title(line: str) -> str | None:
@@ -410,6 +433,88 @@ def build_server() -> FastMCP:
             for item in (items or [])
             if isinstance(item, dict)
         ]
+
+    @mcp.tool()
+    async def list_shopping_recipe_references(
+        ctx: Context, list_id: str
+    ) -> list[dict[str, Any]]:
+        """Show linked recipes and their current quantity factors for a shopping list."""
+        try:
+            return await _client(ctx).list_shopping_recipe_references(list_id)
+        except MealieError as exc:
+            raise RuntimeError(str(exc)) from exc
+
+    @mcp.tool()
+    async def add_recipe_to_shopping_list(
+        ctx: Context,
+        list_id: str,
+        recipe_id: str,
+        factor: float = 1,
+        allow_existing: bool = False,
+    ) -> dict[str, Any]:
+        """Add one recipe with Mealie's native endpoint.
+
+        The factor multiplies base recipe quantities; for four servings from a
+        three-serving recipe use 4/3. Confirm before adding a linked recipe again.
+        """
+        factor = _positive_factor(factor)
+        client = _client(ctx)
+        try:
+            references = await client.list_shopping_recipe_references(list_id)
+            _check_recipe_addition(references, [recipe_id], allow_existing=allow_existing)
+            return await client.add_recipe_to_shopping_list(list_id, recipe_id, factor=factor)
+        except MealieError as exc:
+            raise RuntimeError(str(exc)) from exc
+
+    @mcp.tool()
+    async def add_recipes_to_shopping_list(
+        ctx: Context,
+        list_id: str,
+        recipes: list[ShoppingRecipeInput],
+        allow_existing: bool = False,
+    ) -> dict[str, Any]:
+        """Add recipe ingredients through Mealie's native bulk operation.
+
+        Each factor multiplies that recipe's base quantities: a recipe for three
+        servings needs factor 4/3 for four servings. Check the recipe's base
+        servings and the desired count before calling. Set allow_existing only
+        after the user confirms adding a linked recipe again.
+        """
+        if not recipes:
+            raise ValueError("Choose at least one recipe")
+        client = _client(ctx)
+        try:
+            references = await client.list_shopping_recipe_references(list_id)
+            _check_recipe_addition(
+                references, [recipe.recipe_id for recipe in recipes], allow_existing=allow_existing
+            )
+            return await client.add_recipes_to_shopping_list(
+                list_id,
+                [
+                    {
+                        "recipeId": recipe.recipe_id,
+                        "recipeIncrementQuantity": _positive_factor(recipe.factor),
+                    }
+                    for recipe in recipes
+                ],
+            )
+        except MealieError as exc:
+            raise RuntimeError(str(exc)) from exc
+
+    @mcp.tool(annotations=ToolAnnotations(destructive=True))
+    async def remove_recipe_from_shopping_list(
+        ctx: Context, list_id: str, recipe_id: str, factor: float = 1
+    ) -> dict[str, Any]:
+        """Remove a recipe quantity contribution through Mealie; other items remain.
+
+        Use the existing recipeQuantity reference to choose the decrement factor.
+        """
+        try:
+            return await _client(ctx).remove_recipe_from_shopping_list(
+                list_id, recipe_id, factor=_positive_factor(factor)
+            )
+        except MealieError as exc:
+            raise RuntimeError(str(exc)) from exc
 
     @mcp.tool()
     async def add_shopping_list_items(
