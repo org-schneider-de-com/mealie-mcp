@@ -122,6 +122,8 @@ class MealieClient:
         if not isinstance(current, dict):
             raise MealieError(500, "Unexpected response from get_recipe", current)
         merged = {**current, **patch}
+        if isinstance(current.get("nutrition"), dict) and isinstance(patch.get("nutrition"), dict):
+            merged["nutrition"] = {**current["nutrition"], **patch["nutrition"]}
         if "recipeServings" in patch and "recipeYield" not in patch:
             old_yield = current.get("recipeYield") or ""
             if re.fullmatch(

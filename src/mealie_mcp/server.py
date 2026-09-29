@@ -249,6 +249,10 @@ def _build_recipe_patch(
     prep_time: str | None = None,
     cook_time: str | None = None,
     total_time: str | None = None,
+    perform_time: str | None = None,
+    org_url: str | None = None,
+    recipe_yield_quantity: float | None = None,
+    nutrition: dict[str, str] | None = None,
     ingredients: list[dict[str, Any]] | None = None,
     instructions: list[str] | None = None,
     notes: list[str] | None = None,
@@ -279,6 +283,29 @@ def _build_recipe_patch(
         patch["cookTime"] = cook_time
     if total_time is not None:
         patch["totalTime"] = total_time
+    if perform_time is not None:
+        patch["performTime"] = perform_time
+    if org_url is not None:
+        patch["orgURL"] = org_url
+    if recipe_yield_quantity is not None:
+        patch["recipeYieldQuantity"] = recipe_yield_quantity
+    if nutrition is not None:
+        allowed = {
+            "calories",
+            "carbohydrateContent",
+            "cholesterolContent",
+            "fatContent",
+            "fiberContent",
+            "proteinContent",
+            "saturatedFatContent",
+            "sodiumContent",
+            "sugarContent",
+            "transFatContent",
+            "unsaturatedFatContent",
+        }
+        if unknown := set(nutrition) - allowed:
+            raise ValueError(f"Unsupported nutrition fields: {', '.join(sorted(unknown))}")
+        patch["nutrition"] = nutrition
     if ingredients is not None:
         patch["recipeIngredient"] = ingredients
     if instructions is not None:
@@ -555,6 +582,10 @@ def build_server() -> FastMCP:
         prep_time: str | None = None,
         cook_time: str | None = None,
         total_time: str | None = None,
+        perform_time: str | None = None,
+        org_url: str | None = None,
+        recipe_yield_quantity: float | None = None,
+        nutrition: dict[str, str] | None = None,
         ingredients: list[str | RecipeIngredientInput] | None = None,
         instructions: list[str] | None = None,
         notes: list[str] | None = None,
@@ -581,6 +612,10 @@ def build_server() -> FastMCP:
             prep_time: Free-text prep time, e.g. "15 min".
             cook_time: Free-text cook time, e.g. "30 min".
             total_time: Free-text total time.
+            perform_time: Additional active time as accepted by Mealie.
+            org_url: Source URL of the recipe.
+            recipe_yield_quantity: Numeric yield for non-serving outputs.
+            nutrition: Explicit Mealie nutrition strings; these stay static when servings change.
             ingredients: Structured ingredients or text for Mealie to parse; use exact
                 quantities for scaling. "### Base" creates a section.
             instructions: Ordered steps; "### Base" style lines become sections.
@@ -628,6 +663,10 @@ def build_server() -> FastMCP:
             prep_time=prep_time,
             cook_time=cook_time,
             total_time=total_time,
+            perform_time=perform_time,
+            org_url=org_url,
+            recipe_yield_quantity=recipe_yield_quantity,
+            nutrition=nutrition,
             ingredients=prepared_ingredients,
             instructions=instructions,
             notes=notes,
@@ -659,6 +698,10 @@ def build_server() -> FastMCP:
         prep_time: str | None = None,
         cook_time: str | None = None,
         total_time: str | None = None,
+        perform_time: str | None = None,
+        org_url: str | None = None,
+        recipe_yield_quantity: float | None = None,
+        nutrition: dict[str, str] | None = None,
         ingredients: list[str | RecipeIngredientInput] | None = None,
         instructions: list[str] | None = None,
         notes: list[str] | None = None,
@@ -681,6 +724,10 @@ def build_server() -> FastMCP:
             prep_time: Free-text prep time, e.g. "15 min".
             cook_time: Free-text cook time, e.g. "30 min".
             total_time: Free-text total time.
+            perform_time: Additional active time as accepted by Mealie.
+            org_url: Source URL of the recipe.
+            recipe_yield_quantity: Numeric yield for non-serving outputs.
+            nutrition: Explicit Mealie nutrition strings; omitted fields retain their values.
             ingredients: Structured ingredients or text for Mealie to parse. This
                 replaces the ingredient list; "### Base" creates a section.
             instructions: Ordered steps; "### Base" style lines become sections.
@@ -725,6 +772,10 @@ def build_server() -> FastMCP:
             prep_time=prep_time,
             cook_time=cook_time,
             total_time=total_time,
+            perform_time=perform_time,
+            org_url=org_url,
+            recipe_yield_quantity=recipe_yield_quantity,
+            nutrition=nutrition,
             ingredients=prepared_ingredients,
             instructions=instructions,
             notes=notes,
