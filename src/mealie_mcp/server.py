@@ -138,7 +138,7 @@ class RecipeIngredientInput(BaseModel):
     title: str | None = None
 
 
-_RANGE = re.compile(r"\b\d+(?:[.,]\d+)?\s*[-–]\s*\d+(?:[.,]\d+)?\b")
+_RANGE = re.compile(r"\b\d+(?:[.,]\d+)?\s*(?:[-–]|bis)\s*\d+(?:[.,]\d+)?\b", re.IGNORECASE)
 _EXPLICIT_UNIT = re.compile(
     r"^\s*(?:ca\.?\s*)?\d+(?:[.,]\d+)?\s*(?:kg|g|ml|l|el|tl)\b", re.IGNORECASE
 )

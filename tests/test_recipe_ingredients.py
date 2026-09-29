@@ -91,13 +91,14 @@ async def test_structured_ingredient_resolves_existing_unit_and_creates_food():
 
 
 @pytest.mark.asyncio
-async def test_range_rejected_before_any_api_write():
+@pytest.mark.parametrize("line", ["400-500 g Nudeln", "400 bis 500 g Nudeln"])
+async def test_range_rejected_before_any_api_write(line):
     class UnusedClient:
         async def parse_ingredients(self, lines):
             raise AssertionError("parser should not be called")
 
     with pytest.raises(ValueError, match="exact amount"):
-        await _prepare_ingredients(UnusedClient(), ["400-500 g Nudeln"])
+        await _prepare_ingredients(UnusedClient(), [line])
 
 
 @pytest.mark.asyncio
