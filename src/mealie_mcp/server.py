@@ -852,6 +852,39 @@ def build_server() -> FastMCP:
             raise RuntimeError(str(exc)) from exc
 
     @mcp.tool()
+    async def get_shopping_list(ctx: Context, list_id: str) -> dict[str, Any]:
+        """Inspect a list, including its items, before editing or deleting it."""
+        try:
+            return await _client(ctx).get_shopping_list(list_id)
+        except MealieError as exc:
+            raise RuntimeError(str(exc)) from exc
+
+    @mcp.tool()
+    async def rename_shopping_list(ctx: Context, list_id: str, name: str) -> dict[str, Any]:
+        """Rename a list while preserving its items and settings."""
+        if not name.strip():
+            raise ValueError("List name must not be empty")
+        try:
+            return await _client(ctx).rename_shopping_list(list_id, name)
+        except MealieError as exc:
+            raise RuntimeError(str(exc)) from exc
+
+    @mcp.tool(annotations=ToolAnnotations(destructive=True))
+    async def delete_shopping_list(
+        ctx: Context, list_id: str, expected_name: str
+    ) -> dict[str, Any]:
+        """Delete an inspected list and all its items after confirming its name."""
+        client = _client(ctx)
+        try:
+            current = await client.get_shopping_list(list_id)
+            if current.get("name") != expected_name:
+                raise ValueError("List name changed; inspect the list again before deletion")
+            await client.delete_shopping_list(list_id)
+        except MealieError as exc:
+            raise RuntimeError(str(exc)) from exc
+        return {"id": list_id, "name": expected_name, "status": "deleted"}
+
+    @mcp.tool()
     async def list_shopping_list_items(ctx: Context, list_id: str) -> list[dict[str, Any]]:
         """Return all items in a shopping list.
 
@@ -864,6 +897,68 @@ def build_server() -> FastMCP:
             raise RuntimeError(str(exc)) from exc
         items = payload.get("items") if isinstance(payload, dict) else payload
         return items or []
+
+    @mcp.tool()
+    async def get_shopping_list_item(ctx: Context, item_id: str) -> dict[str, Any]:
+        """Inspect a shopping item and its links before editing or deleting it."""
+        try:
+            return await _client(ctx).get_shopping_list_item(item_id)
+        except MealieError as exc:
+            raise RuntimeError(str(exc)) from exc
+
+    @mcp.tool()
+    async def add_structured_shopping_item(
+        ctx: Context,
+        list_id: str,
+        quantity: float,
+        food_id: str,
+        unit_id: str | None = None,
+        note: str = "",
+    ) -> dict[str, Any]:
+        """Add a measured item using existing Mealie food and unit IDs."""
+        if quantity <= 0:
+            raise ValueError("Quantity must be positive")
+        try:
+            return await _client(ctx).add_shopping_list_item(
+                list_id=list_id,
+                note=note,
+                quantity=quantity,
+                food_id=food_id,
+                unit_id=unit_id,
+            )
+        except MealieError as exc:
+            raise RuntimeError(str(exc)) from exc
+
+    @mcp.tool()
+    async def update_shopping_list_item(
+        ctx: Context,
+        item_id: str,
+        quantity: float | None = None,
+        food_id: str | None = None,
+        unit_id: str | None = None,
+        note: str | None = None,
+        checked: bool | None = None,
+    ) -> dict[str, Any]:
+        """Change supplied item fields in place; other fields remain as in Mealie."""
+        if quantity is not None and quantity <= 0:
+            raise ValueError("Quantity must be positive")
+        patch = {
+            key: value
+            for key, value in (
+                ("quantity", quantity),
+                ("foodId", food_id),
+                ("unitId", unit_id),
+                ("note", note),
+                ("checked", checked),
+            )
+            if value is not None
+        }
+        if not patch:
+            raise ValueError("Provide a field to update")
+        try:
+            return await _client(ctx).update_shopping_list_item(item_id, patch)
+        except MealieError as exc:
+            raise RuntimeError(str(exc)) from exc
 
     @mcp.tool()
     async def check_off_shopping_item(
@@ -882,7 +977,7 @@ def build_server() -> FastMCP:
 
     @mcp.tool(annotations=ToolAnnotations(destructive=True))
     async def delete_shopping_list_item(ctx: Context, item_id: str) -> dict[str, Any]:
-        """Permanently delete an item from a shopping list.
+        """Permanently delete an item from a shopping list; inspect it first.
 
         Args:
             item_id: The shopping list item ID to delete.
