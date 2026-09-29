@@ -660,6 +660,47 @@ def build_server() -> FastMCP:
         ]
 
     @mcp.tool()
+    async def get_tag(ctx: Context, tag_id: str) -> dict[str, Any]:
+        """Read a tag by ID before renaming or deleting it."""
+        try:
+            return await _client(ctx).get_tag(tag_id)
+        except MealieError as exc:
+            raise RuntimeError(str(exc)) from exc
+
+    @mcp.tool()
+    async def create_tag(ctx: Context, name: str) -> dict[str, Any]:
+        """Create an explicit Mealie tag."""
+        if not name.strip():
+            raise ValueError("Tag name must not be empty")
+        try:
+            return await _client(ctx).create_tag(name)
+        except MealieError as exc:
+            raise RuntimeError(str(exc)) from exc
+
+    @mcp.tool()
+    async def rename_tag(ctx: Context, tag_id: str, name: str) -> dict[str, Any]:
+        """Rename an existing Mealie tag."""
+        if not name.strip():
+            raise ValueError("Tag name must not be empty")
+        try:
+            return await _client(ctx).update_tag(tag_id, name)
+        except MealieError as exc:
+            raise RuntimeError(str(exc)) from exc
+
+    @mcp.tool(annotations=ToolAnnotations(destructive=True))
+    async def delete_tag(ctx: Context, tag_id: str, expected_name: str) -> dict[str, Any]:
+        """Delete a tag after checking the inspected name."""
+        client = _client(ctx)
+        try:
+            tag = await client.get_tag(tag_id)
+            if tag.get("name") != expected_name:
+                raise ValueError("Tag name changed; inspect it again before deletion")
+            await client.delete_tag(tag_id)
+        except MealieError as exc:
+            raise RuntimeError(str(exc)) from exc
+        return {"id": tag_id, "status": "deleted"}
+
+    @mcp.tool()
     async def set_recipe_tags(
         ctx: Context,
         slug: str,
@@ -990,6 +1031,7 @@ def build_server() -> FastMCP:
         name: str,
         description: str = "",
         public: bool = False,
+        query_filter_string: str = "",
     ) -> dict[str, Any]:
         """Create a new cookbook.
 
@@ -997,11 +1039,67 @@ def build_server() -> FastMCP:
             name: Display name for the cookbook.
             description: Optional description.
             public: Whether the cookbook is publicly visible.
+            query_filter_string: Native Mealie recipe query filter.
         """
         try:
-            return await _client(ctx).create_cookbook(name, description=description, public=public)
+            return await _client(ctx).create_cookbook(
+                name,
+                description=description,
+                public=public,
+                query_filter_string=query_filter_string,
+            )
         except MealieError as exc:
             raise RuntimeError(str(exc)) from exc
+
+    @mcp.tool()
+    async def get_cookbook(ctx: Context, cookbook_id: str) -> dict[str, Any]:
+        """Read a cookbook and its native query filter."""
+        try:
+            return await _client(ctx).get_cookbook(cookbook_id)
+        except MealieError as exc:
+            raise RuntimeError(str(exc)) from exc
+
+    @mcp.tool()
+    async def update_cookbook(
+        ctx: Context,
+        cookbook_id: str,
+        name: str | None = None,
+        description: str | None = None,
+        public: bool | None = None,
+        query_filter_string: str | None = None,
+    ) -> dict[str, Any]:
+        """Edit specified cookbook fields, preserving the other Mealie fields."""
+        patch = {
+            key: value
+            for key, value in (
+                ("name", name),
+                ("description", description),
+                ("public", public),
+                ("queryFilterString", query_filter_string),
+            )
+            if value is not None
+        }
+        if not patch:
+            raise ValueError("Provide a cookbook field to update")
+        if name is not None and not name.strip():
+            raise ValueError("Cookbook name must not be empty")
+        try:
+            return await _client(ctx).update_cookbook(cookbook_id, patch)
+        except MealieError as exc:
+            raise RuntimeError(str(exc)) from exc
+
+    @mcp.tool(annotations=ToolAnnotations(destructive=True))
+    async def delete_cookbook(ctx: Context, cookbook_id: str, expected_name: str) -> dict[str, Any]:
+        """Delete an inspected cookbook after checking its name."""
+        client = _client(ctx)
+        try:
+            cookbook = await client.get_cookbook(cookbook_id)
+            if cookbook.get("name") != expected_name:
+                raise ValueError("Cookbook name changed; inspect it again before deletion")
+            await client.delete_cookbook(cookbook_id)
+        except MealieError as exc:
+            raise RuntimeError(str(exc)) from exc
+        return {"id": cookbook_id, "status": "deleted"}
 
     return mcp
 

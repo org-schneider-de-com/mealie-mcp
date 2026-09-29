@@ -191,6 +191,15 @@ class MealieClient:
     async def create_tag(self, name: str) -> dict[str, Any]:
         return await self._request("POST", "/api/organizers/tags", json={"name": name})
 
+    async def get_tag(self, tag_id: str) -> dict[str, Any]:
+        return await self._request("GET", f"/api/organizers/tags/{tag_id}")
+
+    async def update_tag(self, tag_id: str, name: str) -> dict[str, Any]:
+        return await self._request("PUT", f"/api/organizers/tags/{tag_id}", json={"name": name})
+
+    async def delete_tag(self, tag_id: str) -> None:
+        await self._request("DELETE", f"/api/organizers/tags/{tag_id}")
+
     async def get_or_create_tag(self, name: str) -> dict[str, Any]:
         """Return existing tag by name (case-insensitive) or create it."""
         result = await self.list_tags()
@@ -339,10 +348,34 @@ class MealieClient:
         return await self._request("GET", "/api/households/cookbooks", params={"perPage": 1000})
 
     async def create_cookbook(
-        self, name: str, *, description: str = "", public: bool = False
+        self,
+        name: str,
+        *,
+        description: str = "",
+        public: bool = False,
+        query_filter_string: str = "",
     ) -> dict[str, Any]:
         return await self._request(
             "POST",
             "/api/households/cookbooks",
-            json={"name": name, "description": description, "public": public},
+            json={
+                "name": name,
+                "description": description,
+                "public": public,
+                "queryFilterString": query_filter_string,
+            },
         )
+
+    async def get_cookbook(self, cookbook_id: str) -> dict[str, Any]:
+        return await self._request("GET", f"/api/households/cookbooks/{cookbook_id}")
+
+    async def update_cookbook(self, cookbook_id: str, patch: dict[str, Any]) -> dict[str, Any]:
+        current = await self.get_cookbook(cookbook_id)
+        if not isinstance(current, dict):
+            raise MealieError(500, "Unexpected cookbook response", current)
+        return await self._request(
+            "PUT", f"/api/households/cookbooks/{cookbook_id}", json={**current, **patch}
+        )
+
+    async def delete_cookbook(self, cookbook_id: str) -> None:
+        await self._request("DELETE", f"/api/households/cookbooks/{cookbook_id}")
