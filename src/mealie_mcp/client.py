@@ -267,10 +267,15 @@ class MealieClient:
         import base64
 
         try:
-            content = base64.b64decode(b64_data)
+            content = base64.b64decode(b64_data, validate=True)
+            if not content:
+                raise ValueError("empty image")
         except Exception as exc:
             raise MealieError(400, f"Invalid base64 data: {exc}") from exc
         return await self._upload_recipe_image(slug, content, content_type)
+
+    async def delete_recipe_image(self, slug: str) -> None:
+        await self._request("DELETE", f"/api/recipes/{slug}/image")
 
     # ---- Shopping lists ----------------------------------------------------------
 

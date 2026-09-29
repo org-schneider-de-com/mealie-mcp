@@ -713,6 +713,15 @@ def build_server() -> FastMCP:
             raise RuntimeError(str(exc)) from exc
         return {"slug": slug, "status": "image updated"}
 
+    @mcp.tool(annotations=ToolAnnotations(destructive=True))
+    async def delete_recipe_image(ctx: Context, slug: str) -> dict[str, Any]:
+        """Remove a recipe image through Mealie's DELETE route."""
+        try:
+            await _client(ctx).delete_recipe_image(slug)
+        except MealieError as exc:
+            raise RuntimeError(str(exc)) from exc
+        return {"slug": slug, "status": "image deleted"}
+
     @mcp.tool()
     async def create_meal_plan_entry(
         ctx: Context,
