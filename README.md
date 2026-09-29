@@ -303,3 +303,27 @@ mealie-mcp/
 ## License
 
 MIT
+
+The optional BLS nutrition data is separately licensed under CC BY 4.0.
+See `src/mealie_mcp/data/LICENSE-BLS.txt` for attribution and source.
+
+## BLS nutrition
+
+`find_bls_food` searches the bundled BLS 4.0 German names and codes. An
+exact, unique name or code may be used automatically. Review candidate codes
+for ambiguous or missing names; `calculate_recipe_nutrition` accepts explicit
+`selections` keyed by ingredient index. For pieces, volume, or unknown units,
+provide the total ingredient weight in grams through `gram_weights`. No
+density or piece weight is silently assumed.
+
+`calculate_recipe_nutrition` previews totals and per-serving values with
+source, match status, assumptions and completeness. It writes only when
+`save=true`, all rows are complete, and existing Mealie nutrition is absent
+or `replace_existing=true`. The stored values are static for the recipe's
+current base servings; changing portions in Mealie does not recalculate them.
+
+At creation, `calculate_bls_nutrition=true` performs a single calculation.
+It stores an automatically calculated value only when every ingredient is
+resolved and weighted, and no explicit nutrition was supplied. A data error
+is reported in `blsNutrition` without blocking recipe creation. The full
+bundled data extract has 7,140 foods and seven nutrients per 100 g.

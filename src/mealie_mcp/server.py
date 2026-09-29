@@ -20,6 +20,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from . import bls
 from .auth import OAuthConfig, extract_bearer_token
 from .client import MealieClient, MealieError
 
@@ -777,6 +778,7 @@ def build_server() -> FastMCP:
         tags: list[str] | None = None,
         categories: list[str] | None = None,
         tools: list[str] | None = None,
+        calculate_bls_nutrition: bool = False,
     ) -> dict[str, Any]:
         """Create a recipe fully populated with content in one call.
 
@@ -815,6 +817,19 @@ def build_server() -> FastMCP:
         prepared_ingredients = (
             await _prepare_ingredients(client, ingredients) if ingredients is not None else None
         )
+        bls_result: dict[str, Any] | None = None
+        if calculate_bls_nutrition:
+            try:
+                serving_patch = _build_recipe_patch(
+                    recipe_yield=recipe_yield, recipe_servings=recipe_servings
+                )
+                bls_result = bls.calculate(
+                    prepared_ingredients or [], serving_patch.get("recipeServings") or 0
+                )
+                if bls_result["complete"] and nutrition is None:
+                    nutrition = bls.mealie_nutrition(bls_result)
+            except (OSError, ValueError) as exc:
+                bls_result = {"complete": False, "error": str(exc), "source": bls.SOURCE}
         tag_objects: list[dict[str, Any]] | None = None
         if tags is not None:
             try:
@@ -859,17 +874,70 @@ def build_server() -> FastMCP:
         except MealieError as exc:
             raise RuntimeError(str(exc)) from exc
         if not patch:
-            return {"slug": slug, "name": name}
+            return {
+                "slug": slug,
+                "name": name,
+                **({"blsNutrition": bls_result} if bls_result else {}),
+            }
 
         try:
             updated = await client.update_recipe(slug, patch)
         except MealieError as exc:
             raise RuntimeError(f"Recipe '{slug}' was created but update failed: {exc}") from exc
-        return (
+        result = (
             _summarize_recipe(updated)
             if isinstance(updated, dict)
             else {"slug": slug, "name": name}
         )
+        if bls_result is not None:
+            result["blsNutrition"] = bls_result
+        return result
+
+    @mcp.tool()
+    async def find_bls_food(ctx: Context, name: str) -> dict[str, Any]:
+        """Find BLS 4.0 names and codes; inspect candidates before selecting a code."""
+        return bls.find_food(name)
+
+    @mcp.tool()
+    async def calculate_recipe_nutrition(
+        ctx: Context,
+        slug: str,
+        selections: dict[int, str] | None = None,
+        gram_weights: dict[int, float] | None = None,
+        save: bool = False,
+        replace_existing: bool = False,
+    ) -> dict[str, Any]:
+        """Preview BLS nutrition for a saved recipe; optionally save a complete result.
+
+        Choose BLS codes for ambiguous foods. Supply total grams for a row with
+        pieces, volume or unknown units. Inspect the preview and explicitly
+        confirm before replacing previously stored Mealie nutrition.
+        """
+        client = _client(ctx)
+        try:
+            recipe = await client.get_recipe(slug)
+        except MealieError as exc:
+            raise RuntimeError(str(exc)) from exc
+        result = bls.calculate(
+            recipe.get("recipeIngredient") or [],
+            recipe.get("recipeServings") or 0,
+            selections=selections,
+            gram_weights=gram_weights,
+        )
+        result["saved"] = False
+        if save:
+            if not result["complete"]:
+                raise ValueError("Incomplete BLS calculation cannot be saved; inspect the preview")
+            if recipe.get("nutrition") and not replace_existing:
+                raise ValueError("Existing Mealie nutrition requires replace_existing=true")
+            try:
+                await client.update_recipe(
+                    slug, {"nutrition": bls.mealie_nutrition(result)}, replace_nutrition=True
+                )
+            except MealieError as exc:
+                raise RuntimeError(str(exc)) from exc
+            result["saved"] = True
+        return result
 
     @mcp.tool()
     async def update_recipe(

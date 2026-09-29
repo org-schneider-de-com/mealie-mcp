@@ -1,0 +1,11 @@
+Bundeslebensmittelschlüssel (BLS) 4.0, German 2025 data
+Copyright © 2025 Max Rubner-Institut.
+DOI: 10.25826/Data20251217-134202-0
+Source: https://blsdb.de/
+License: Creative Commons Attribution 4.0 International (CC BY 4.0)
+https://creativecommons.org/licenses/by/4.0/
+
+The bundled compressed JSON is a reduced extract of the official German BLS 4.0 XLSX:
+BLS code, German food name, energy (kcal), protein, fat, available
+carbohydrate, fiber, sugar and sodium per 100 g. Original values are not
+modified. Other fields and provenance columns are omitted to reduce size.
