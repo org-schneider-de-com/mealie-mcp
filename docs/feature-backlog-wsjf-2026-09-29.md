@@ -1,27 +1,27 @@
-# Mealie-MCP: WSJF-Backlog und GitHub-Issue-Entwürfe
+# Mealie-MCP: WSJF-Backlog und GitHub Issues
 
-Stand: 29. September 2026. Grundlage ist der [vereinbarte MCP-Zuschnitt](mcp-scope-and-implementation-2026-09-29.md), nicht die vollständige 60-Punkte-API-Inventur. **GitHub Issues sind in `org-schneider-de-com/mealie-mcp` deaktiviert.** Ein `create_issue`-Aufruf wurde von GitHub mit HTTP 410 („Issues has been disabled in this repository“) zurückgewiesen. Die folgenden Abschnitte sind fertig formulierte Entwürfe, keine bereits angelegten Issues.
+Stand: 29. September 2026. Grundlage ist der [vereinbarte MCP-Zuschnitt](mcp-scope-and-implementation-2026-09-29.md), nicht die vollständige 60-Punkte-API-Inventur. Die 14 GitHub Issues [#15–#28](https://github.com/org-schneider-de-com/mealie-mcp/issues) sind jetzt angelegt und jeweils mit einem Draft-PR verknüpft. PR #1 enthält bereits Code für skalierbare Zutaten; PRs #2–#14 enthalten derzeit die Aufgabenbeschreibung, noch keine Implementierung.
 
 ## Methode
 
 `WSJF = (Business Value + Time Criticality + Risk Reduction / Opportunity Enablement) / Job Size`. Alle vier Werte sind **relative Schätzungen** aus `1, 2, 3, 5, 8` für den Fünf-Personen-Haushalt und den beobachteten Fork. `8` bedeutet im Vergleich zu den anderen Einträgen hoch, keine Stunden-/Euroangabe. Time Criticality meint hier die Dringlichkeit, den gegenwärtigen täglichen Ablauf zu reparieren, nicht eine erfundene externe Deadline. Auf zwei Dezimalstellen angezeigte Quotienten sind Sortierhilfen, keine Messgenauigkeit. Technische Abhängigkeiten gehen vor der Zahlenreihenfolge; ein bereits laufender PR wird nicht künstlich gestoppt.
 
-| Rang | Typ | Feature / Fehler | BV | TC | RR/OE | Größe | WSJF | Stand / Abhängigkeit |
-| ---: | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
-| 1 | Bug | Einkaufsartikel lesen und POST-Antwort korrekt auswerten | 8 | 8 | 8 | 2 | **12,00** | Grundlage für Artikelbearbeitung |
-| 2 | Feature | Strukturierte Zutaten und numerische Portionen | 8 | 8 | 8 | 3 | **8,00** | Entwurfs-PR #1 in Arbeit |
-| 3 | Feature | Native Rezept-zu-Einkaufsliste-Endpunkte | 8 | 8 | 5 | 3 | **7,00** | Strukturierte Zutaten, Einkaufsvertrag |
-| 4 | Feature | Food-/Unit-Treffer vor Neuanlage zeigen | 5 | 5 | 8 | 3 | **6,00** | Ergänzt PR #1 |
-| 5 | Feature | Rezeptsuche mit Filtern und Pagination | 5 | 3 | 3 | 2 | **5,50** | Unabhängig |
-| 6 | Feature | Wochenplan mit sieben Typen, Text und Update | 8 | 5 | 3 | 3 | **5,33** | Für Chat-Ablauf Plan → Einkauf |
-| 7 | Feature | Listen und Artikel mit nativer API bearbeiten | 8 | 5 | 3 | 3 | **5,33** | Bug aus Rang 1 zuerst |
-| 8 | Feature | Quelle, Zeiten und explizite Nährwerte pflegen | 5 | 3 | 2 | 2 | **5,00** | Grundlage für BLS-Speicherung |
-| 9 | Einmalige Aufgabe | Textzutaten im Altbestand geprüft migrieren | 8 | 5 | 8 | 5 | **4,20** | PR #1, API-Verifikation, Freigabe |
-| 10 | Feature | Eingefügtes HTML/JSON importieren | 5 | 3 | 3 | 3 | **3,67** | Strukturprüfung aus Rang 2 |
-| 11 | Feature | Rezeptbilder setzen, ersetzen und entfernen | 3 | 2 | 2 | 2 | **3,50** | Vorhandenen Upload ergänzen |
-| 12 | Feature | Kochbücher und Tags vollständig pflegen | 5 | 3 | 2 | 3 | **3,33** | Vorhandene List/Create-Tools ergänzen |
-| 13 | Feature | „Zuletzt gekocht“ nach Bestätigung setzen | 2 | 2 | 1 | 2 | **2,50** | Kein Scheduler, keine automatische Ableitung |
-| 14 | Feature | BLS-Nährwerte bei Neuanlage/auf Nachfrage | 8 | 3 | 5 | 8 | **2,00** | Rezeptfelder, lokaler BLS, Datenzuordnung |
+| Rang | Issue | Draft-PR | Typ | Feature / Fehler | BV | TC | RR/OE | Größe | WSJF | Stand / Abhängigkeit |
+| ---: | --- | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| 1 | [#15](https://github.com/org-schneider-de-com/mealie-mcp/issues/15) | [#2](https://github.com/org-schneider-de-com/mealie-mcp/pull/2) | Bug | Einkaufsartikel lesen und POST-Antwort korrekt auswerten | 8 | 8 | 8 | 2 | **12,00** | Grundlage für Artikelbearbeitung |
+| 2 | [#16](https://github.com/org-schneider-de-com/mealie-mcp/issues/16) | [#1](https://github.com/org-schneider-de-com/mealie-mcp/pull/1) | Feature | Strukturierte Zutaten und numerische Portionen | 8 | 8 | 8 | 3 | **8,00** | Entwurfs-PR #1 in Arbeit |
+| 3 | [#17](https://github.com/org-schneider-de-com/mealie-mcp/issues/17) | [#3](https://github.com/org-schneider-de-com/mealie-mcp/pull/3) | Feature | Native Rezept-zu-Einkaufsliste-Endpunkte | 8 | 8 | 5 | 3 | **7,00** | Strukturierte Zutaten, Einkaufsvertrag |
+| 4 | [#18](https://github.com/org-schneider-de-com/mealie-mcp/issues/18) | [#4](https://github.com/org-schneider-de-com/mealie-mcp/pull/4) | Feature | Food-/Unit-Treffer vor Neuanlage zeigen | 5 | 5 | 8 | 3 | **6,00** | Ergänzt PR #1 |
+| 5 | [#19](https://github.com/org-schneider-de-com/mealie-mcp/issues/19) | [#5](https://github.com/org-schneider-de-com/mealie-mcp/pull/5) | Feature | Rezeptsuche mit Filtern und Pagination | 5 | 3 | 3 | 2 | **5,50** | Unabhängig |
+| 6 | [#20](https://github.com/org-schneider-de-com/mealie-mcp/issues/20) | [#6](https://github.com/org-schneider-de-com/mealie-mcp/pull/6) | Feature | Wochenplan mit sieben Typen, Text und Update | 8 | 5 | 3 | 3 | **5,33** | Für Chat-Ablauf Plan → Einkauf |
+| 7 | [#21](https://github.com/org-schneider-de-com/mealie-mcp/issues/21) | [#7](https://github.com/org-schneider-de-com/mealie-mcp/pull/7) | Feature | Listen und Artikel mit nativer API bearbeiten | 8 | 5 | 3 | 3 | **5,33** | Bug aus Rang 1 zuerst |
+| 8 | [#22](https://github.com/org-schneider-de-com/mealie-mcp/issues/22) | [#8](https://github.com/org-schneider-de-com/mealie-mcp/pull/8) | Feature | Quelle, Zeiten und explizite Nährwerte pflegen | 5 | 3 | 2 | 2 | **5,00** | Grundlage für BLS-Speicherung |
+| 9 | [#23](https://github.com/org-schneider-de-com/mealie-mcp/issues/23) | [#9](https://github.com/org-schneider-de-com/mealie-mcp/pull/9) | Einmalige Aufgabe | Textzutaten im Altbestand geprüft migrieren | 8 | 5 | 8 | 5 | **4,20** | PR #1, API-Verifikation, Freigabe |
+| 10 | [#24](https://github.com/org-schneider-de-com/mealie-mcp/issues/24) | [#10](https://github.com/org-schneider-de-com/mealie-mcp/pull/10) | Feature | Eingefügtes HTML/JSON importieren | 5 | 3 | 3 | 3 | **3,67** | Strukturprüfung aus Rang 2 |
+| 11 | [#25](https://github.com/org-schneider-de-com/mealie-mcp/issues/25) | [#11](https://github.com/org-schneider-de-com/mealie-mcp/pull/11) | Feature | Rezeptbilder setzen, ersetzen und entfernen | 3 | 2 | 2 | 2 | **3,50** | Vorhandenen Upload ergänzen |
+| 12 | [#26](https://github.com/org-schneider-de-com/mealie-mcp/issues/26) | [#12](https://github.com/org-schneider-de-com/mealie-mcp/pull/12) | Feature | Kochbücher und Tags vollständig pflegen | 5 | 3 | 2 | 3 | **3,33** | Vorhandene List/Create-Tools ergänzen |
+| 13 | [#27](https://github.com/org-schneider-de-com/mealie-mcp/issues/27) | [#13](https://github.com/org-schneider-de-com/mealie-mcp/pull/13) | Feature | „Zuletzt gekocht“ nach Bestätigung setzen | 2 | 2 | 1 | 2 | **2,50** | Kein Scheduler, keine automatische Ableitung |
+| 14 | [#28](https://github.com/org-schneider-de-com/mealie-mcp/issues/28) | [#14](https://github.com/org-schneider-de-com/mealie-mcp/pull/14) | Feature | BLS-Nährwerte bei Neuanlage/auf Nachfrage | 8 | 3 | 5 | 8 | **2,00** | Rezeptfelder, lokaler BLS, Datenzuordnung |
 
 Die Tabellenreihenfolge ist eine **WSJF-Sortierung**, keine starre Commit-Reihenfolge. Insbesondere läuft PR #1 bereits; die Einkaufsfunktionen brauchen dessen strukturierte Zutaten. Der BLS-Eintrag hat trotz hohem persönlichen Nutzen einen niedrigeren Quotienten, weil Matching, Einheiten und Datenaufbereitung erheblichen Aufwand verursachen. Kein Ticket verlangt, Mealies Skalierungs- und Einkaufs-Konsolidierungslogik nachzubauen.
 
@@ -193,6 +193,6 @@ Die Tabellenreihenfolge ist eine **WSJF-Sortierung**, keine starre Commit-Reihen
 
 **Dateien:** separates BLS-Modul/Datenimport, `src/mealie_mcp/{client,server}.py`, fachliche Rechenfälle und API-Vertragstests. **Abhängigkeit:** Issues 2 und 8 sowie technische Prüfung des BLS-Datenformats.
 
-## Veröffentlichung als GitHub Issues
+## Verknüpfungen und Stand
 
-Nach Aktivierung der Repository-Funktion **Issues** unter *Settings → General → Features → Issues* jeden nummerierten Abschnitt als eigenes Issue anlegen. Titel entsprechen den Überschriften ohne „Issue N —“. Die WSJF-Tabelle bleibt der gemeinsame Priorisierungsnachweis. Issue 2 mit dem laufenden Entwurfs-PR #1 verknüpfen. Bis dahin sind dies **Entwürfe im PR-Branch**, nicht GitHub-Issue-URLs.
+Jeder Abschnitt oben ist als eigenständiges GitHub Issue veröffentlicht. Die Rangtabelle verlinkt Issue und zugehörigen Draft-PR. Erst wenn der jeweilige Code implementiert und die Abnahmekriterien erfüllt sind, kann ein PR zur Prüfung bereitgestellt werden. **Kein PR wird allein wegen einer abgeschlossenen Aufgabenbeschreibung gemergt.**
