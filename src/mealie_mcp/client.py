@@ -146,11 +146,29 @@ class MealieClient:
             return result
         return []
 
-    async def list_meal_plan(self, start_date: str, end_date: str) -> dict[str, Any]:
+    async def list_meal_plan(
+        self, start_date: str, end_date: str, *, page: int = 1, per_page: int = 1000
+    ) -> dict[str, Any]:
         return await self._request(
             "GET",
             "/api/households/mealplans",
-            params={"start_date": start_date, "end_date": end_date, "perPage": 1000},
+            params={
+                "start_date": start_date,
+                "end_date": end_date,
+                "page": page,
+                "perPage": per_page,
+            },
+        )
+
+    async def get_meal_plan_entry(self, entry_id: int) -> dict[str, Any]:
+        return await self._request("GET", f"/api/households/mealplans/{entry_id}")
+
+    async def update_meal_plan_entry(self, entry_id: int, patch: dict[str, Any]) -> dict[str, Any]:
+        current = await self.get_meal_plan_entry(entry_id)
+        if not isinstance(current, dict):
+            raise MealieError(500, "Unexpected meal plan entry response", current)
+        return await self._request(
+            "PUT", f"/api/households/mealplans/{entry_id}", json={**current, **patch}
         )
 
     async def create_meal_plan_entry(

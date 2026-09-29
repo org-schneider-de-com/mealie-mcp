@@ -21,7 +21,7 @@ from .client import MealieClient, MealieError
 
 logger = logging.getLogger(__name__)
 
-EntryType = Literal["breakfast", "lunch", "dinner", "side"]
+EntryType = Literal["breakfast", "lunch", "dinner", "side", "snack", "drink", "dessert"]
 
 
 @dataclass
@@ -383,19 +383,31 @@ def build_server() -> FastMCP:
             raise RuntimeError(str(exc)) from exc
 
     @mcp.tool()
-    async def list_meal_plan(ctx: Context, start_date: str, end_date: str) -> list[dict[str, Any]]:
+    async def list_meal_plan(
+        ctx: Context, start_date: str, end_date: str, page: int = 1, per_page: int = 50
+    ) -> dict[str, Any]:
         """List meal plan entries between two dates (inclusive).
+
+        For "this week" and "next week", choose Monday through Sunday in
+        Europe/Berlin before calling this date-range API.
 
         Args:
             start_date: ISO date string, e.g. "2026-04-24".
             end_date: ISO date string, e.g. "2026-05-01".
+            page: One-based page number; request later pages until totalPages.
+            per_page: Number of entries per page.
         """
+        if page < 1 or per_page < 1:
+            raise ValueError("page and per_page must be positive")
         try:
-            payload = await _client(ctx).list_meal_plan(start_date, end_date)
+            payload = await _client(ctx).list_meal_plan(
+                start_date, end_date, page=page, per_page=per_page
+            )
         except MealieError as exc:
             raise RuntimeError(str(exc)) from exc
-        items = payload.get("items") if isinstance(payload, dict) else payload
-        return items or []
+        if not isinstance(payload, dict):
+            raise RuntimeError("Unexpected meal plan response")
+        return payload
 
     @mcp.tool()
     async def list_shopping_lists(ctx: Context) -> list[dict[str, Any]]:
@@ -720,20 +732,22 @@ def build_server() -> FastMCP:
         entry_type: EntryType,
         recipe_slug: str | None = None,
         title: str | None = None,
+        text: str | None = None,
     ) -> dict[str, Any]:
         """Add an entry to the meal plan.
 
-        Either ``recipe_slug`` or ``title`` should be provided. ``recipe_slug``
+        Either ``recipe_slug``, ``title`` or ``text`` should be provided. ``recipe_slug``
         links to an existing recipe; ``title`` creates a free-text entry.
 
         Args:
             date: ISO date string for the meal, e.g. "2026-04-24".
-            entry_type: One of "breakfast", "lunch", "dinner", "side".
+            entry_type: Breakfast, lunch, dinner, side, snack, drink or dessert.
             recipe_slug: Optional slug of an existing recipe to schedule.
             title: Optional free-text title (used when no recipe is linked).
+            text: Optional description for the meal-plan entry.
         """
-        if not recipe_slug and not title:
-            raise ValueError("Provide either recipe_slug or title")
+        if not recipe_slug and not title and not text:
+            raise ValueError("Provide recipe_slug, title or text")
 
         client = _client(ctx)
         recipe_id: str | None = None
@@ -752,7 +766,54 @@ def build_server() -> FastMCP:
                 entry_type=entry_type,
                 recipe_id=recipe_id,
                 title=title,
+                text=text,
             )
+        except MealieError as exc:
+            raise RuntimeError(str(exc)) from exc
+
+    @mcp.tool()
+    async def get_meal_plan_entry(ctx: Context, entry_id: int) -> dict[str, Any]:
+        """Read one meal-plan entry by its numeric ID."""
+        try:
+            return await _client(ctx).get_meal_plan_entry(entry_id)
+        except MealieError as exc:
+            raise RuntimeError(str(exc)) from exc
+
+    @mcp.tool()
+    async def update_meal_plan_entry(
+        ctx: Context,
+        entry_id: int,
+        date: str | None = None,
+        entry_type: EntryType | None = None,
+        recipe_slug: str | None = None,
+        clear_recipe: bool = False,
+        title: str | None = None,
+        text: str | None = None,
+    ) -> dict[str, Any]:
+        """Edit a meal-plan entry in place; clear_recipe removes an existing recipe link."""
+        if recipe_slug and clear_recipe:
+            raise ValueError("Choose recipe_slug or clear_recipe")
+        patch: dict[str, Any] = {}
+        for key, value in (
+            ("date", date),
+            ("entryType", entry_type),
+            ("title", title),
+            ("text", text),
+        ):
+            if value is not None:
+                patch[key] = value
+        client = _client(ctx)
+        try:
+            if recipe_slug:
+                recipe = await client.get_recipe(recipe_slug)
+                if not isinstance(recipe, dict) or not recipe.get("id"):
+                    raise ValueError(f"Recipe '{recipe_slug}' has no id")
+                patch["recipeId"] = recipe["id"]
+            elif clear_recipe:
+                patch["recipeId"] = None
+            if not patch:
+                raise ValueError("Provide at least one field to update")
+            return await client.update_meal_plan_entry(entry_id, patch)
         except MealieError as exc:
             raise RuntimeError(str(exc)) from exc
 
